@@ -2,8 +2,10 @@
 """Report AI-provenance signals in images and Illustrator/PDF files. Read-only.
 
 For every input it reports:
-  * metadata -- EXIF/XMP/IPTC/PNG-text fields that name an AI tool or an
-    AI digital source type (exiftool);
+  * metadata -- EXIF/XMP/IPTC/PNG-text/JPEG-comment/PDF fields that name an AI
+    tool, carry generation settings (prompts, "Steps: .. Sampler: ..", Midjourney
+    flags, ComfyUI graphs) or an AI digital source type (exiftool), plus file
+    names that generators give their downloads ("ChatGPT Image ...");
   * C2PA -- a Content Credentials manifest, its claim generator and any
     AI actions/ingredients it declares (c2patool);
   * invisible watermarks the public can decode locally:
@@ -22,12 +24,15 @@ With --strip and/or --sign, every input is also written to the output folder
 are never modified.
   --strip  removes flagged tags. Images: all metadata and C2PA are dropped
            (exiftool), keeping the colour profile and orientation. .ai/.pdf:
-           the flagged XMP entries are blanked in place (same length), so the
-           file stays valid and Illustrator-editable without being rewritten.
+           the flagged XMP entries and document properties are blanked in place
+           (same length), so the file stays valid and Illustrator-editable
+           without being rewritten. Placed images that keep their own EXIF
+           inside the file are listed, to be replaced in Illustrator.
+  --rename gives output copies with AI-generator file names a neutral name.
            Invisible watermarks are pixel data, not tags, and are left as is.
   --sign   embeds Content Credentials signed by the identity of the person
            using this Mac (set up once with --create-identity "Name"; kept in
-           ~/Library/Application Support/Provenance Studio/identity). When AI
+           ~/Library/Application Support/JTag Provenance Studio/identity). When AI
            content was detected (or --ai), the manifest declares it; that
            can't be turned off. PDF/.ai can't carry an embedded manifest, so
            sign the exported images.
@@ -35,12 +40,13 @@ are never modified.
 Usage:
   .venv/bin/python detect_ai_provenance.py INPUT... [--work DIR] [--json OUT]
                                            [--min-side 256] [--no-watermarks]
-                                           [--strip [OUTDIR]] [--sign] [--ai] [--out DIR]
+                                           [--strip [OUTDIR]] [--sign] [--rename] [--ai] [--out DIR]
   .venv/bin/python detect_ai_provenance.py --create-identity "Your Name"
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mmap
 import re
@@ -58,22 +64,49 @@ CONTAINER_SUFFIXES = {".ai", ".pdf"}
 AI_SOURCE_TYPES = ("trainedAlgorithmicMedia", "compositeWithTrainedAlgorithmicMedia",
                    "algorithmicMedia", "compositeSynthetic")
 AI_TOOL_PATTERN = re.compile(
-    r"firefly|generative (fill|expand)|midjourney|dall[-·]?e|openai|chatgpt|stable ?diffusion|sdxl|comfyui|"
-    r"automatic1111|invokeai|leonardo\.ai|ideogram|imagen|gemini|google ai|synthid|bing image creator|"
-    r"adobe gen ?ai|made with ai|ai[- ]generated|trainedalgorithmic|c2pa|contentcredentials|jumbf",
+    r"firefly|generative (fill|expand|edit|remove)|midjourney|niji ?journey|dall[-·]?e|openai|chatgpt|"
+    r"gpt[- ]?image|gpt-4o|sora\b|stable ?diffusion|stability ?ai|dreamstudio|clipdrop|\bsdxl\b|\bsd ?3(\.5)?\b|"
+    r"comfyui|automatic1111|invokeai|fooocus|swarmui|novelai|leonardo\.ai|ideogram|imagen\b|gemini|google ai|"
+    r"nano ?banana|synthid|bing image creator|copilot|microsoft designer|meta ai|imagined with ai|grok\b|"
+    r"\bflux(\.1)?\b|black ?forest ?labs|runway ?(ml|gen)|\bkling\b|\bkrea\b|recraft|playground ?(ai|v\d)|"
+    r"nightcafe|dream machine|luma ai|freepik ai|pikaso|canva (magic media|dream lab)|magic media|"
+    r"seedream|jimeng|doubao|hunyuan|qwen[- ]?image|kolors|minimax|hailuo|image playground|galaxy ai|"
+    r"magic editor|adobe gen ?ai|made with ai|ai[- ]generated|generated (by|with) ai|trainedalgorithmic|"
+    r"c2pa|contentcredentials|jumbf",
+    re.IGNORECASE,
+)
+# Generation settings that betray a generator even when no tool is named: Stable Diffusion UIs write
+# "Steps: 30, Sampler: ..., CFG scale: ..." (often into EXIF UserComment), Midjourney "Job ID" and
+# "--ar 16:9" flags, ComfyUI JSON graphs, NovelAI's "uc" field.
+AI_PROMPT_PATTERN = re.compile(
+    r"negative prompt:|steps: ?\d+, ?sampler|cfg scale: ?\d|denoising strength|\bseed: ?\d{3,}|"
+    r"job ?id: ?[0-9a-f]{8}-|--(ar|aspect) \d+:\d+|--(v|niji|stylize|chaos|style raw)\b|"
+    r"\"class_type\"|\"ksampler|\"sampler_name\"|\"uc\": ?\"|invokeai_metadata|sd-metadata|sui_image_params",
     re.IGNORECASE,
 )
 # Fields that commonly carry generation parameters or provenance even when no
-# tool name matches (A1111 `parameters`, ComfyUI `prompt`/`workflow`).
-AI_FIELD_NAMES = re.compile(r"digitalsourcetype|parameters$|prompt$|workflow$|c2pa|jumbf|credit$|aigenerat",
-                            re.IGNORECASE)
+# tool name matches (A1111 `parameters`, ComfyUI `prompt`/`workflow`, InvokeAI, SwarmUI, Fooocus).
+AI_FIELD_NAMES = re.compile(r"digitalsourcetype|parameters$|prompt$|workflow$|c2pa|jumbf|credit$|aigenerat|"
+                            r"invokeai|sd-metadata|sui_image_params|generation_data|fooocus", re.IGNORECASE)
+# File names that generators give their downloads (ChatGPT, Gemini, Midjourney, ComfyUI, A1111, ...).
+AI_FILE_NAME = re.compile(
+    r"chatgpt image|dall[-·]?e|gemini_generated|midjourney|firefly|ideogram|leonardo|grok|\bflux|sora|"
+    r"kling|stable[_ -]?diffusion|comfyui|generated[_ -]image|ai[_ -]generated|"
+    r"_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|^\d{5}-\d+(-|\.)",  # Midjourney, A1111
+    re.IGNORECASE,
+)
+PDF_INFO_ENTRY = re.compile(rb"/(Title|Subject|Keywords|Creator|Producer|Author)\s*(\((?:\\.|[^\\)])*\)|<[0-9A-Fa-f\s]*>)")
 
 XMP_PACKET = re.compile(rb"<\?xpacket begin.*?<\?xpacket end[^>]*\?>", re.DOTALL)
 XMP_LIST_ITEM = re.compile(rb"<rdf:li\b[^>]*>(?:(?!<rdf:li\b|</rdf:li>).)*</rdf:li>", re.DOTALL)  # innermost
 XMP_ATTRIBUTE = re.compile(rb"""\s[\w.-]+:[\w.-]+=(?:"[^"]*"|'[^']*')""")
 XMP_ELEMENT = re.compile(rb"<([\w.-]+:[\w.-]+)\b[^>]*>[^<]*</\1>")
 
-IDENTITY_HOME = Path.home() / "Library" / "Application Support" / "Provenance Studio" / "identity"
+IDENTITY_HOME = Path.home() / "Library" / "Application Support" / "JTag Provenance Studio" / "identity"
+_OLD_IDENTITY_HOME = Path.home() / "Library" / "Application Support" / "Provenance Studio" / "identity"
+if _OLD_IDENTITY_HOME.exists() and not IDENTITY_HOME.exists():  # from before the app was renamed
+    IDENTITY_HOME.parent.mkdir(parents=True, exist_ok=True)
+    _OLD_IDENTITY_HOME.rename(IDENTITY_HOME)
 SIGNABLE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".heic", ".avif", ".gif"}
 IPTC_SOURCE = "http://cv.iptc.org/newscodes/digitalsourcetype/"
 TIMESTAMP_URL = "http://timestamp.digicert.com"
@@ -107,11 +140,17 @@ def metadata_hits(path: Path) -> dict[str, str]:
     hits = {}
     for key, value in flatten(json.loads(result.stdout)[0]):
         text = str(value)
-        if key.startswith(("System:", "File:", "ExifTool:")):
+        if key == "SourceFile" or key.startswith(("System:", "ExifTool:")):  # File: stays: it holds the JPEG comment
             continue
-        if AI_FIELD_NAMES.search(key) or AI_TOOL_PATTERN.search(text) or any(t in text for t in AI_SOURCE_TYPES):
+        if AI_FIELD_NAMES.search(key) or looks_ai(text):
             hits[key] = text[:300]
+    if AI_FILE_NAME.search(path.name):
+        hits["FileName"] = f"{path.name} (name given by an AI generator)"
     return hits
+
+
+def looks_ai(text: str) -> bool:
+    return bool(AI_TOOL_PATTERN.search(text) or AI_PROMPT_PATTERN.search(text)) or any(t in text for t in AI_SOURCE_TYPES)
 
 
 def flatten(obj, prefix=""):
@@ -201,7 +240,32 @@ class WatermarkDecoders:
 
 def names_ai(text: bytes) -> bool:
     decoded = text.decode("utf-8", "replace")
-    return bool(AI_TOOL_PATTERN.search(decoded)) or any(t in decoded for t in AI_SOURCE_TYPES)
+    return looks_ai(decoded) or bool(AI_FILE_NAME.search(decoded))
+
+
+def pdf_string(raw: bytes) -> str:
+    """Decode a PDF literal (...) or hex <...> string, enough to pattern-match it."""
+    if raw.startswith(b"<"):
+        data = bytes.fromhex(re.sub(rb"\s", b"", raw[1:-1]).decode())
+    else:
+        data = re.sub(rb"\\(.)", rb"\1", raw[1:-1])
+    return data[2:].decode("utf-16-be", "replace") if data.startswith(b"\xfe\xff") else data.decode("latin-1")
+
+
+def scrub_pdf_info(data: mmap.mmap) -> int:
+    """Blank AI-naming document properties (Title, Keywords, Creator, ...) with spaces, same length."""
+    removed = 0
+    for match in PDF_INFO_ENTRY.finditer(data):
+        value = match.group(2)
+        if not names_ai(pdf_string(value).encode()):
+            continue
+        if value.startswith(b"<"):
+            blanked = b"<" + re.sub(rb"[0-9A-Fa-f]{2}", b"20", value[1:-1]) + b">"
+        else:
+            blanked = b"(" + b" " * (len(value) - 2) + b")"
+        data[match.start(2):match.end(2)] = blanked
+        removed += 1
+    return removed
 
 
 def scrub_xmp(packet: bytes) -> tuple[bytes, int]:
@@ -234,8 +298,9 @@ def strip_container(source: Path, target: Path) -> str:
             if count:
                 data[match.start():match.end()] = cleaned
                 removed += count
+        properties = scrub_pdf_info(data)
         data.flush()
-    return f"{removed} XMP entries blanked"
+    return f"{removed} XMP entries and {properties} document properties blanked"
 
 
 def strip_image(source: Path, target: Path) -> str:
@@ -300,7 +365,7 @@ def sign_file(target: Path, ai: bool, parent: Path | None, home: Path = IDENTITY
     manifest = {
         "alg": "es256", "private_key": str(home / "signer.p8"), "sign_cert": str(home / "chain.pem"),
         "ta_url": TIMESTAMP_URL,
-        "claim_generator_info": [{"name": "Provenance Studio", "version": "1.0"}],
+        "claim_generator_info": [{"name": "JTag Provenance Studio", "version": "1.1"}],
         "title": target.name,
         "assertions": [
             {"label": "c2pa.actions",
@@ -327,10 +392,14 @@ def sign_file(target: Path, ai: bool, parent: Path | None, home: Path = IDENTITY
         signed.unlink(missing_ok=True)
 
 
-def make_output(report: Report, out_dir: Path, strip: bool, sign: bool, ai: bool) -> Report:
+def make_output(report: Report, out_dir: Path, strip: bool, sign: bool, ai: bool, rename: bool = False,
+                embedded: list[Report] = ()) -> Report:
     """Write the output copy: tags stripped and/or signed. The input is never modified."""
     source = Path(report.path)
-    target = out_dir / source.name
+    name = source.name
+    if rename and AI_FILE_NAME.search(name):
+        name = f"image-{hashlib.sha1(name.encode()).hexdigest()[:8]}{source.suffix.lower()}"
+    target = out_dir / name
     if target.resolve() == source.resolve():
         raise SystemExit(f"the output would overwrite the input {source}; choose another output folder")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -346,7 +415,13 @@ def make_output(report: Report, out_dir: Path, strip: bool, sign: bool, ai: bool
     if sign:
         # Keep an existing manifest's history as the parent unless it was just stripped.
         notes.append(sign_file(target, ai, source if report.c2pa and not strip else None))
+    if name != source.name:
+        notes.append(f"renamed from {source.name}")
     out = Report(str(target), "output", metadata_hits(target), c2pa_manifest(target), notes=notes)
+    carrying = [Path(r.path).name for r in embedded if r.metadata_hits]
+    if strip and carrying:
+        out.notes.append(f"{len(carrying)} placed image(s) keep their own metadata inside the file "
+                         f"({', '.join(carrying[:5])}); replace them in Illustrator with cleaned copies")
     if strip and tagged and source.suffix.lower() in CONTAINER_SUFFIXES and out.c2pa:
         out.notes.append("C2PA inside a PDF/AI can't be removed in place; re-export it without Content Credentials")
     return out
@@ -422,6 +497,8 @@ def main() -> int:
                         help="write copies with the AI metadata/C2PA tags removed (to OUTDIR or --out)")
     parser.add_argument("--sign", action="store_true",
                         help="write copies signed with this Mac's Content Credentials identity")
+    parser.add_argument("--rename", action="store_true",
+                        help="give output copies with AI-generator file names (\"ChatGPT Image ...\") a neutral name")
     parser.add_argument("--ai", action="store_true", help="declare AI content even if none is detected")
     parser.add_argument("--out", default=str(Path.home() / "ai-provenance" / "output"), help="output folder")
     parser.add_argument("--create-identity", metavar="NAME", help="set up the signing identity for this Mac's user")
@@ -445,9 +522,9 @@ def main() -> int:
     work = Path(args.work).expanduser()
     reports, outputs = [], []
 
-    def maybe_output(report: Report, ai_found: bool) -> None:
+    def maybe_output(report: Report, ai_found: bool, embedded: list[Report] = ()) -> None:
         if strip or args.sign:
-            outputs.append(make_output(report, out_dir, strip, args.sign, ai_found or args.ai))
+            outputs.append(make_output(report, out_dir, strip, args.sign, ai_found or args.ai, args.rename, embedded))
             print_report(outputs[-1])
 
     for path in gather(args.inputs):
@@ -460,7 +537,7 @@ def main() -> int:
                 embedded.append(inspect_image(image, decoders, args.min_side, kind=f"embedded in {path.name}"))
                 print_report(embedded[-1])
             reports += embedded
-            maybe_output(container, container.flagged or any(r.flagged for r in embedded))
+            maybe_output(container, container.flagged or any(r.flagged for r in embedded), embedded)
         else:
             reports.append(inspect_image(path, decoders, args.min_side))
             print_report(reports[-1])

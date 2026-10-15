@@ -1,4 +1,4 @@
-// Provenance Studio: a window around tools/detect_ai_provenance.py.
+// JTag Provenance Studio: a window around tools/detect_ai_provenance.py.
 // Add files, choose what to do (remove AI tags, sign with Content Credentials), get the output copies.
 // Signing always uses the identity of the person using this Mac; AI content found is always declared.
 import AppKit
@@ -25,6 +25,7 @@ final class Studio: ObservableObject {
     @Published var sign = true
     @Published var watermarks = true
     @Published var declareAI = false
+    @Published var rename = true
     @Published var outDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("ai-provenance/output")
     @Published var log = ""
     @Published var running = false
@@ -68,6 +69,7 @@ final class Studio: ObservableObject {
         if strip { args.append("--strip") }
         if sign { args.append("--sign") }
         if declareAI { args.append("--ai") }
+        if rename { args.append("--rename") }
         if !watermarks { args.append("--no-watermarks") }
 
         let process = makeProcess(args)
@@ -249,6 +251,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("What to do").font(.headline)
             Toggle("Remove AI metadata tags", isOn: $studio.strip)
+            Toggle("Rename files with AI-generator names (e.g. \"ChatGPT Image …\")", isOn: $studio.rename)
             HStack {
                 Toggle("Add Content Credentials", isOn: $studio.sign).disabled(studio.signer == nil)
                 if let signer = studio.signer {
@@ -308,9 +311,9 @@ struct ContentView: View {
 }
 
 @main
-struct ProvenanceStudioApp: App {
+struct JTagProvenanceStudioApp: App {
     var body: some Scene {
-        WindowGroup("Provenance Studio") { ContentView() }
+        WindowGroup("JTag Provenance Studio") { ContentView() }
             .windowResizability(.contentMinSize)
     }
 }
