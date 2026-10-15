@@ -9,7 +9,7 @@ For every input it reports:
   * C2PA -- a Content Credentials manifest, its claim generator and any
     AI actions/ingredients it declares (c2patool);
   * invisible watermarks the public can decode locally:
-      - Adobe TrustMark (the open C2PA soft-binding watermark), variants Q and P;
+      - Adobe TrustMark (the open C2PA soft-binding watermark), variants Q, P, B and C;
       - the Stable Diffusion 1.x/2.x and SDXL `invisible-watermark` marks.
     Proprietary marks (Google SynthID, Meta, OpenAI) have no public decoder,
     so the report says they were not checkable rather than "absent".
@@ -190,15 +190,19 @@ class WatermarkDecoders:
 
     def __init__(self):
         self.trustmark = {}
+        self.trustmark_error = None
         try:
             from trustmark import TrustMark
-            for variant in ("Q", "P"):
-                # Decoder only: the package would otherwise also load its remover model.
-                self.trustmark[variant] = TrustMark(verbose=False, model_type=variant, loadRemover=False)
         except Exception as error:  # noqa: BLE001 -- report, don't abort the scan
             self.trustmark_error = str(error)
-        else:
-            self.trustmark_error = None
+            return
+        # All four published variants (Q/P are current; B and C are used by older and compact encoders).
+        for variant in ("Q", "P", "B", "C"):
+            try:
+                # Decoder only: the package would otherwise also load its remover model.
+                self.trustmark[variant] = TrustMark(verbose=False, model_type=variant, loadRemover=False)
+            except Exception as error:  # noqa: BLE001 -- e.g. weights not downloadable offline
+                self.trustmark_error = f"variant {variant}: {error}"
 
     def check(self, path: Path) -> dict[str, str]:
         from PIL import Image
@@ -417,6 +421,11 @@ def make_output(report: Report, out_dir: Path, strip: bool, sign: bool, ai: bool
         notes.append(sign_file(target, ai, source if report.c2pa and not strip else None))
     if name != source.name:
         notes.append(f"renamed from {source.name}")
+    marked = [f"{Path(r.path).name}: {k}" for r in [report, *embedded]
+              for k, v in r.watermarks.items() if v.startswith("PRESENT")]
+    if marked:
+        notes.append(f"invisible watermark still in the pixels ({'; '.join(marked[:5])}"
+                     f"{'; ...' if len(marked) > 5 else ''}): it identifies the source even with the tags removed")
     out = Report(str(target), "output", metadata_hits(target), c2pa_manifest(target), notes=notes)
     carrying = [Path(r.path).name for r in embedded if r.metadata_hits]
     if strip and carrying:

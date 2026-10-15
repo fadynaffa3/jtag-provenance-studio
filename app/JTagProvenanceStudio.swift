@@ -16,6 +16,8 @@ struct OutputFile: Identifiable {
     let notes: [String]
     let remainingTags: Int
     let signed: Bool
+    var watermarked: Bool { notes.contains { $0.hasPrefix("invisible watermark") } }
+    var clean: Bool { remainingTags == 0 && !watermarked }
 }
 
 @MainActor
@@ -279,11 +281,14 @@ struct ContentView: View {
             Text("Output").font(.headline)
             ForEach(studio.results) { file in
                 HStack(alignment: .top) {
-                    Image(systemName: file.remainingTags == 0 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(file.remainingTags == 0 ? .green : .orange)
+                    Image(systemName: file.clean ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(file.clean ? .green : .orange)
                     VStack(alignment: .leading) {
                         Text((file.path as NSString).lastPathComponent).bold()
-                        ForEach(file.notes, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+                        ForEach(file.notes, id: \.self) { note in
+                            Text(note).font(.caption)
+                                .foregroundStyle(note.hasPrefix("invisible watermark") ? .orange : .secondary)
+                        }
                         if file.remainingTags > 0 { Text("\(file.remainingTags) AI tags still present").font(.caption).foregroundStyle(.orange) }
                     }
                     Spacer()
