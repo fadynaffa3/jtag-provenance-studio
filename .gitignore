@@ -1,0 +1,12 @@
+# Client files and scan results never go in the repo
+input/
+work/
+output/
+*.ai
+*.pdf
+*.json
+# Local builds and environments
+tools/.venv/
+app/*.app/
+__pycache__/
+.DS_Store
