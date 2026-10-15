@@ -5,9 +5,12 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-let toolsDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("ai-provenance/tools")
-let python = toolsDir.appendingPathComponent(".venv/bin/python")
-let script = toolsDir.appendingPathComponent("detect_ai_provenance.py")
+// Tools live inside the app bundle (Contents/Resources); fall back to the repo checkout for dev builds.
+let resourcesDir: URL = Bundle.main.resourceURL
+    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("ai-provenance/tools")
+let python  = resourcesDir.appendingPathComponent("venv/bin/python3")
+let script  = resourcesDir.appendingPathComponent("detect_ai_provenance.py")
+let binDir  = resourcesDir.appendingPathComponent("bin")
 let accepted = ["jpg", "jpeg", "png", "tif", "tiff", "webp", "heic", "avif", "gif", "bmp", "jp2", "ai", "pdf"]
 
 struct OutputFile: Identifiable {
@@ -26,7 +29,6 @@ final class Studio: ObservableObject {
     @Published var strip = true
     @Published var sign = true
     @Published var watermarks = true
-    @Published var declareAI = false
     @Published var rename = true
     @Published var outDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("ai-provenance/output")
     @Published var log = ""
@@ -70,7 +72,6 @@ final class Studio: ObservableObject {
         var args = files.map(\.path) + ["--out", outDir.path, "--json", report.path]
         if strip { args.append("--strip") }
         if sign { args.append("--sign") }
-        if declareAI { args.append("--ai") }
         if rename { args.append("--rename") }
         if !watermarks { args.append("--no-watermarks") }
 
@@ -96,7 +97,7 @@ final class Studio: ObservableObject {
             }
         }
         do { try process.run() } catch {
-            log = "Could not start the tool: \(error.localizedDescription)\nExpected it at \(script.path)"
+            log = "Could not start the tool: \(error.localizedDescription)\nLooked for engine at \(script.path)"
             running = false
         }
     }
@@ -117,12 +118,22 @@ final class Studio: ObservableObject {
         process.executableURL = python
         process.arguments = [script.path] + args
         var env = ProcessInfo.processInfo.environment
-        // Apps started from Finder get a minimal PATH; exiftool, c2patool and pdfimages live in Homebrew.
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        // Prefer bundled binaries; fall back to Homebrew for dev builds without a full bundle.
+        let fallback = "/opt/homebrew/bin:/usr/local/bin"
+        env["PATH"] = binDir.path + ":" + fallback + ":" + (env["PATH"] ?? "/usr/bin:/bin")
+        // exiftool is a Perl script; point it at its bundled lib tree (or Homebrew's as fallback).
+        let exiftoolLib = resourcesDir.appendingPathComponent("exiftool-lib").path
+        env["PERLLIB"] = FileManager.default.fileExists(atPath: exiftoolLib)
+            ? exiftoolLib : "/opt/homebrew/Cellar/exiftool/\(installedExiftoolVersion())/libexec/lib"
         env["PYTHONUNBUFFERED"] = "1"
         process.environment = env
-        process.currentDirectoryURL = toolsDir
+        process.currentDirectoryURL = resourcesDir
         return process
+    }
+
+    private func installedExiftoolVersion() -> String {
+        let dir = URL(fileURLWithPath: "/opt/homebrew/Cellar/exiftool")
+        return (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.last ?? "13.55_1"
     }
 
     private func runSync(_ args: [String]) -> String {
@@ -262,11 +273,7 @@ struct ContentView: View {
                     Button("Set Up Signing Identity…") { showIdentity = true }
                 }
             }
-            if studio.sign {
-                Toggle("Declare AI content even if none is detected", isOn: $studio.declareAI).padding(.leading, 20)
-                Text("AI content that is detected is always declared. .ai/.pdf files can't hold credentials; sign the exported images.")
-                    .font(.caption).foregroundStyle(.secondary).padding(.leading, 20)
-            }
+
             Toggle("Check invisible watermarks (slower, more thorough AI detection)", isOn: $studio.watermarks)
             HStack {
                 Text("Output folder:")
