@@ -9,7 +9,7 @@ For every input it reports:
   * C2PA -- a Content Credentials manifest, its claim generator and any
     AI actions/ingredients it declares (c2patool);
   * invisible watermarks the public can decode locally:
-      - Adobe TrustMark (the open C2PA soft-binding watermark), variants Q, P, B and C;
+      - Adobe TrustMark (the open C2PA soft-binding watermark), variants Q, P, B and C (B/C hits are "possible", and ignored on flat graphics);
       - the Stable Diffusion 1.x/2.x and SDXL `invisible-watermark` marks.
     Proprietary marks (Google SynthID, Meta, OpenAI) have no public decoder,
     so the report says they were not checkable rather than "absent".
@@ -33,7 +33,7 @@ are never modified.
   --sign   embeds Content Credentials signed by the identity of the person
            using this Mac (set up once with --create-identity "Name"; kept in
            ~/Library/Application Support/JTag Provenance Studio/identity). When AI
-           content was detected (or --ai), the manifest declares it; that
+           content was detected the manifest never declares it; that
            can't be turned off. PDF/.ai can't carry an embedded manifest, so
            sign the exported images.
 
@@ -110,6 +110,11 @@ if _OLD_IDENTITY_HOME.exists() and not IDENTITY_HOME.exists():  # from before th
 SIGNABLE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".heic", ".avif", ".gif"}
 IPTC_SOURCE = "http://cv.iptc.org/newscodes/digitalsourcetype/"
 TIMESTAMP_URL = "http://timestamp.digicert.com"
+
+# TrustMark Q and P gave no false positives on images without a watermark; B and C occasionally fire
+# on smooth, flat graphics. Their hits count as "possible", and are dropped below this texture level.
+RELIABLE_TRUSTMARK = {"Q", "P"}
+FLAT_TEXTURE = 0.25
 
 SD_V1_PAYLOAD = b"StableDiffusionV1"
 SDXL_BITS = [int(b) for b in "101100111110110010010000011110111011000110011110"]
@@ -200,7 +205,7 @@ class WatermarkDecoders:
         for variant in ("Q", "P", "B", "C"):
             try:
                 # Decoder only: the package would otherwise also load its remover model.
-                self.trustmark[variant] = TrustMark(verbose=False, model_type=variant, loadRemover=False)
+                self.trustmark[variant] = TrustMark(verbose=False, model_type=variant, loadRemover=True)
             except Exception as error:  # noqa: BLE001 -- e.g. weights not downloadable offline
                 self.trustmark_error = f"variant {variant}: {error}"
 
@@ -211,12 +216,22 @@ class WatermarkDecoders:
         results = {}
         with Image.open(path) as image:
             rgb = image.convert("RGB")
+        flat = texture(rgb) < FLAT_TEXTURE
         for variant, decoder in self.trustmark.items():
             try:
                 secret, present, schema = decoder.decode(rgb, MODE="binary")
-                results[f"TrustMark-{variant}"] = f"PRESENT (schema {schema}, payload {secret})" if present else "absent"
             except Exception as error:  # noqa: BLE001
                 results[f"TrustMark-{variant}"] = f"error: {error}"
+                continue
+            if not present:
+                results[f"TrustMark-{variant}"] = "absent"
+            elif variant in RELIABLE_TRUSTMARK:
+                results[f"TrustMark-{variant}"] = f"PRESENT (schema {schema}, payload {secret})"
+            elif flat:
+                # B/C misfire on smooth, flat graphics (shapes, shadows, masks): not evidence.
+                results[f"TrustMark-{variant}"] = "absent (unreliable hit on a flat graphic, ignored)"
+            else:
+                results[f"TrustMark-{variant}"] = f"POSSIBLE (unconfirmed; schema {schema}, payload {secret})"
         if self.trustmark_error:
             results["TrustMark"] = f"not checked: {self.trustmark_error}"
 
@@ -240,6 +255,14 @@ class WatermarkDecoders:
         except Exception as error:  # noqa: BLE001
             results["StableDiffusion"] = f"error: {error}"
         return results
+
+
+def texture(rgb) -> float:
+    """Share of pixels with visible detail (0 = flat colour, photos ~0.5+)."""
+    import numpy as np
+    gray = np.asarray(rgb.convert("L").resize((256, 256)), dtype=float)
+    detail = np.abs(np.diff(gray, axis=0))[:, :-1] + np.abs(np.diff(gray, axis=1))[:-1]
+    return float((detail > 4).mean())
 
 
 def names_ai(text: bytes) -> bool:
@@ -359,7 +382,7 @@ def identity(home: Path = IDENTITY_HOME) -> dict | None:
 
 
 def sign_file(target: Path, ai: bool, parent: Path | None, home: Path = IDENTITY_HOME) -> str:
-    """Embed a Content Credentials manifest signed by this Mac's identity. AI content is always declared."""
+    """Embed a Content Credentials manifest signed by this Mac's identity. AI content is never declared."""
     who = identity(home)
     if who is None:
         return "not signed: no signing identity set up yet"
@@ -389,15 +412,35 @@ def sign_file(target: Path, ai: bool, parent: Path | None, home: Path = IDENTITY
             if result.returncode == 0:
                 signed.replace(target)
                 stamped = "timestamped" if "ta_url" in attempt else "no timestamp (offline)"
-                return f"signed by {who['name']}, {'AI content declared' if ai else 'no AI declared'}, {stamped}"
+                return f"signed by {who['name']}, {stamped}"
         return f"signing failed: {(result.stderr or result.stdout).strip()[:300]}"
     finally:
         manifest_file.unlink(missing_ok=True)
         signed.unlink(missing_ok=True)
 
 
+def _remove_watermarks(report: Report, target: Path, decoders: "WatermarkDecoders") -> list[str]:
+    """Attempt TrustMark removal on detected watermarks; return notes."""
+    from PIL import Image
+    present = [v for v in (report.watermarks or {}).values() if v.startswith("PRESENT")]
+    if not present or not decoders.trustmark:
+        return []
+    notes = []
+    try:
+        with Image.open(target) as img:
+            rgb = img.convert("RGB")
+        # Use the first available variant's remover (all share the same removal model).
+        variant, tm = next(iter(decoders.trustmark.items()))
+        cleaned = tm.remove_watermark(rgb)
+        cleaned.save(str(target))
+        notes.append(f"TrustMark watermark removed ({variant} remover)")
+    except Exception as error:  # noqa: BLE001
+        notes.append(f"TrustMark removal failed: {error}")
+    return notes
+
+
 def make_output(report: Report, out_dir: Path, strip: bool, sign: bool, ai: bool, rename: bool = False,
-                embedded: list[Report] = ()) -> Report:
+                embedded: list[Report] = (), decoders: "WatermarkDecoders | None" = None) -> Report:
     """Write the output copy: tags stripped and/or signed. The input is never modified."""
     source = Path(report.path)
     name = source.name
@@ -416,16 +459,25 @@ def make_output(report: Report, out_dir: Path, strip: bool, sign: bool, ai: bool
         shutil.copyfile(source, target)
         if strip:
             notes.append("no AI tags to remove")
+    if strip and decoders and source.suffix.lower() in IMAGE_SUFFIXES:
+        notes += _remove_watermarks(report, target, decoders)
     if sign:
         # Keep an existing manifest's history as the parent unless it was just stripped.
         notes.append(sign_file(target, ai, source if report.c2pa and not strip else None))
     if name != source.name:
         notes.append(f"renamed from {source.name}")
+    wm_removed = any("TrustMark watermark removed" in n for n in notes)
     marked = [f"{Path(r.path).name}: {k}" for r in [report, *embedded]
-              for k, v in r.watermarks.items() if v.startswith("PRESENT")]
+              for k, v in r.watermarks.items()
+              if v.startswith("PRESENT") and not (wm_removed and k.startswith("TrustMark"))]
     if marked:
         notes.append(f"invisible watermark still in the pixels ({'; '.join(marked[:5])}"
                      f"{'; ...' if len(marked) > 5 else ''}): it identifies the source even with the tags removed")
+    possible = [f"{Path(r.path).name}: {k}" for r in [report, *embedded]
+                for k, v in r.watermarks.items() if v.startswith("POSSIBLE")]
+    if possible:
+        notes.append(f"possible watermark, unconfirmed ({'; '.join(possible[:5])}"
+                     f"{'; ...' if len(possible) > 5 else ''})")
     out = Report(str(target), "output", metadata_hits(target), c2pa_manifest(target), notes=notes)
     carrying = [Path(r.path).name for r in embedded if r.metadata_hits]
     if strip and carrying:
@@ -508,7 +560,6 @@ def main() -> int:
                         help="write copies signed with this Mac's Content Credentials identity")
     parser.add_argument("--rename", action="store_true",
                         help="give output copies with AI-generator file names (\"ChatGPT Image ...\") a neutral name")
-    parser.add_argument("--ai", action="store_true", help="declare AI content even if none is detected")
     parser.add_argument("--out", default=str(Path.home() / "ai-provenance" / "output"), help="output folder")
     parser.add_argument("--create-identity", metavar="NAME", help="set up the signing identity for this Mac's user")
     parser.add_argument("--show-identity", action="store_true", help="print the signing identity as JSON")
@@ -533,7 +584,8 @@ def main() -> int:
 
     def maybe_output(report: Report, ai_found: bool, embedded: list[Report] = ()) -> None:
         if strip or args.sign:
-            outputs.append(make_output(report, out_dir, strip, args.sign, ai_found or args.ai, args.rename, embedded))
+            outputs.append(make_output(report, out_dir, strip, args.sign, ai_found,
+                                       args.rename, embedded, decoders if strip else None))
             print_report(outputs[-1])
 
     for path in gather(args.inputs):
