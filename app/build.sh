@@ -21,8 +21,18 @@ swiftc -parse-as-library -O -target arm64-apple-macos14 \
 cp "$REPO/tools/detect_ai_provenance.py" "$RES/"
 echo "Copying venv (this may take a minute — ~1.4 GB)…"
 cp -R "$VENV" "$RES/venv"
-# Fix the venv's internal symlinks so they work from the new location
-"$RES/venv/bin/python3" -m venv --upgrade "$RES/venv" 2>/dev/null || true
+
+# Rewrite the venv python binaries now (before dylibbundler runs) so they reference the
+# bundled path. We copy the actual dylib AFTER dylibbundler, because -od wipes Frameworks/.
+PY_VER=$(ls /opt/homebrew/Cellar/python@3.14/ | tail -1)
+PY_FWK_SRC="/opt/homebrew/Cellar/python@3.14/$PY_VER/Frameworks/Python.framework/Versions/3.14/Python"
+for py_bin in "$RES/venv/bin/python3" "$RES/venv/bin/python3."*; do
+  [[ -f "$py_bin" && ! -L "$py_bin" ]] || continue
+  install_name_tool \
+    -change "$PY_FWK_SRC" "@executable_path/../Frameworks/Python" \
+    -change "@executable_path/../Frameworks/Python" "@executable_path/../Frameworks/Python" \
+    "$py_bin" 2>/dev/null || true
+done
 
 # ── 3. External binaries ──────────────────────────────────────────────────────
 # c2patool (statically links most things, but needs openssl@4)
@@ -60,6 +70,12 @@ dylibbundler -od -b \
   -s "$HB/opt/xz/lib" -s "$HB/opt/zstd/lib" -s "$HB/opt/webp/lib" \
   -d "$FWK" -p "@executable_path/../Frameworks/"
 
+# Copy Python framework dylib AFTER dylibbundler (which wipes and recreates Frameworks/).
+cp "$PY_FWK_SRC" "$FWK/Python"
+chmod +w "$FWK/Python"
+install_name_tool -id "@executable_path/../Frameworks/Python" "$FWK/Python"
+codesign --force --sign - "$FWK/Python"
+
 # ── 5. App icon ───────────────────────────────────────────────────────────────
 ICONSET=$(mktemp -d)/AppIcon.iconset
 mkdir -p "$ICONSET"
@@ -83,8 +99,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>JTagProvenanceStudio</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>3</string>
-  <key>CFBundleShortVersionString</key><string>1.2</string>
+  <key>CFBundleVersion</key><string>4</string>
+  <key>CFBundleShortVersionString</key><string>1.3</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
