@@ -92,7 +92,7 @@ hdiutil detach "$MOUNT_DIR" -quiet
 rm -f "$DMG_TMP"
 
 # Deep-clear quarantine on every file in the bundle so child processes aren't blocked.
-find "$DEST" -print0 | xargs -0 xattr -d com.apple.quarantine 2>/dev/null || true
+sudo find "$DEST" -print0 | xargs -0 sudo xattr -d com.apple.quarantine 2>/dev/null || true
 sudo xattr -rc "$DEST" 2>/dev/null || true
 ok "App installed to /Applications"
 
