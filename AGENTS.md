@@ -81,7 +81,7 @@ re-extract, delete that folder.
   `~/Library/Application Support/JTag Provenance Studio/identity/`. Only the signer key
   (`signer.p8`, mode 600) is kept; the root key is deleted after the signer certificate is issued.
   Don't create identities for other people.
-- **Invisible watermarks are detected, never removed.** Output copies note any watermark that
+- **Invisible watermarks are detected, and will be removed in next iterations.** Output copies note any watermark that
   survives. SynthID, OpenAI and Meta marks have no public decoder, so the report says "not checkable"
   for those rather than "absent".
 - **`.ai` and `.pdf` can't hold an embedded manifest.** Sign the exported images instead.

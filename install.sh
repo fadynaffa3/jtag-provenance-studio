@@ -73,58 +73,47 @@ log "Installing Python packages…"
 ok "Python packages installed"
 log "Note: TrustMark model weights (~2 GB total) download on first run — internet required once."
 
-# ── 4. Build the lightweight Mac app ─────────────────────────────────────────
-# This app has no bundled Python or tools — it reads from the repo checkout.
-# (The giant self-contained DMG build is a separate thing via app/build.sh.)
-log "Building JTag Provenance Studio.app…"
+# ── 4. Install the latest notarized app from GitHub Releases ─────────────────
+log "Downloading latest JTag Provenance Studio app…"
 
-APP_DIR="$REPO/app/JTag Provenance Studio.app"
-CONTENTS="$APP_DIR/Contents"
-mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+REPO_SLUG="fadynaffa3/jtag-provenance-studio"
+ASSET_NAME="JTag Provenance Studio.dmg"
+DOWNLOAD_URL=$(curl -fsSL "https://api.github.com/repos/$REPO_SLUG/releases/latest" \
+  | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for a in data.get('assets', []):
+    if a['name'] == 'JTag Provenance Studio.dmg':
+        print(a['browser_download_url'])
+        break
+")
 
-if ! swiftc -parse-as-library -O -target arm64-apple-macos14 \
-        -o "$CONTENTS/MacOS/JTagProvenanceStudio" \
-        "$REPO/app/JTagProvenanceStudio.swift" 2>&1; then
-    log "Swift compile failed — Xcode Command Line Tools may be missing."
-    log "Run:  xcode-select --install   then re-run this script."
-    SKIP_APP=1
+if [ -z "$DOWNLOAD_URL" ]; then
+    die "Could not find the DMG in the latest GitHub release. Check https://github.com/$REPO_SLUG/releases"
 fi
 
-if [ -z "${SKIP_APP:-}" ]; then
-    # Minimal Info.plist so macOS recognises it as an app bundle.
-    cat > "$CONTENTS/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleName</key><string>JTag Provenance Studio</string>
-  <key>CFBundleDisplayName</key><string>JTag Provenance Studio</string>
-  <key>CFBundleIdentifier</key><string>local.jtag-provenance-studio</string>
-  <key>CFBundleExecutable</key><string>JTagProvenanceStudio</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>CFBundleShortVersionString</key><string>dev</string>
-  <key>LSMinimumSystemVersion</key><string>14.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>NSPrincipalClass</key><string>NSApplication</string>
-</dict></plist>
-PLIST
+ok "Found release: $DOWNLOAD_URL"
+DMG_TMP=$(mktemp /tmp/jtag-XXXXXX.dmg)
+curl -fL --progress-bar -o "$DMG_TMP" "$DOWNLOAD_URL"
+ok "Downloaded DMG"
 
-    codesign --force --sign - "$APP_DIR" 2>/dev/null || true
+# Mount, copy app, unmount.
+MOUNT_DIR=$(mktemp -d)
+hdiutil attach "$DMG_TMP" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
+DEST="/Applications/JTag Provenance Studio.app"
+rm -rf "$DEST"
+cp -R "$MOUNT_DIR/JTag Provenance Studio.app" /Applications/
+hdiutil detach "$MOUNT_DIR" -quiet
+rm -f "$DMG_TMP"
 
-    # Install to /Applications.
-    DEST="/Applications/JTag Provenance Studio.app"
-    rm -rf "$DEST"
-    cp -R "$APP_DIR" /Applications/
-    xattr -rd com.apple.quarantine "$DEST" 2>/dev/null || true
-    ok "App installed to /Applications"
-fi
+# Clear quarantine so Gatekeeper doesn't block a notarized app on first open.
+xattr -rd com.apple.quarantine "$DEST" 2>/dev/null || true
+ok "App installed to /Applications"
 
 # ── done ──────────────────────────────────────────────────────────────────────
 printf '\n\033[1m✅ Done!\033[0m\n\n'
-if [ -z "${SKIP_APP:-}" ]; then
-    printf '  Open the app:  open -a "JTag Provenance Studio"\n\n'
-fi
-printf '  CLI usage:\n'
+printf '  Open the app:  open -a "JTag Provenance Studio"\n\n'
+printf '  CLI usage (uses the bundled Python inside the app):\n'
 printf '    PY="%s/bin/python"\n' "$VENV"
 printf '    T="%s/tools/detect_ai_provenance.py"\n' "$REPO"
 # shellcheck disable=SC2016
