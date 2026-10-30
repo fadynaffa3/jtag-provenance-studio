@@ -29,8 +29,13 @@ printf '\n\033[1mJTag Provenance Studio — Installer\033[0m\n\n'
 printf '  1) Download prebuilt app  (recommended — notarized, no prerequisites)\n'
 printf '  2) Build from source      (requires Xcode + Homebrew; stays in ~/ai-provenance)\n\n'
 printf 'Choose [1/2, default 1]: '
-# When piped from curl, stdin is the script itself — /dev/tty gives the terminal.
-read -r MODE </dev/tty || MODE=""
+if [ -t 0 ]; then
+    read -r MODE
+elif [ -c /dev/tty ]; then
+    read -r MODE </dev/tty
+else
+    MODE=""
+fi
 case "$MODE" in
     2) MODE=build ;;
     *) MODE=download ;;
@@ -73,7 +78,9 @@ fi
 
 ok "Found release: $DOWNLOAD_URL"
 DMG_TMP=$(mktemp /tmp/jtag-XXXXXX.dmg)
-curl -fL --progress-bar -o "$DMG_TMP" "$DOWNLOAD_URL"
+printf '  Downloading DMG (this may take a minute — it is ~2 GB)…\n'
+curl -fL --progress-bar -o "$DMG_TMP" "$DOWNLOAD_URL" 2>&1 || \
+    curl -fL --no-progress-meter -o "$DMG_TMP" "$DOWNLOAD_URL"
 ok "Downloaded DMG"
 
 # Mount, copy app, unmount.
