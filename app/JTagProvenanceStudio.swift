@@ -130,7 +130,7 @@ final class Studio: ObservableObject {
         let stdlib = resourcesDir.appendingPathComponent("python3.14-stdlib").path
         let sitePkgs = resourcesDir.appendingPathComponent("venv/lib/python3.14/site-packages").path
         let fwkDylib = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Frameworks/Python.dylib").path
+            .appendingPathComponent("Contents/Frameworks/Python.framework/Versions/3.14/Python").path
         if FileManager.default.fileExists(atPath: stdlib) {
             env["PYTHONPATH"] = stdlib + ":" + sitePkgs
         }
@@ -220,6 +220,9 @@ struct ContentView: View {
                     .disabled(studio.running || studio.files.isEmpty || !(studio.strip || studio.sign))
                 if studio.running { ProgressView().controlSize(.small) }
                 Spacer()
+                if let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+                    Text("v\(v)").foregroundStyle(.secondary).font(.caption)
+                }
                 Button("Open Output Folder") { NSWorkspace.shared.open(studio.outDir) }
             }
             if !studio.results.isEmpty { resultsSection }

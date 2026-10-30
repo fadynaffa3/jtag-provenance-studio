@@ -74,9 +74,9 @@ for py_link in "$RES/venv/bin/python3" "$RES/venv/bin/python3.14" "$RES/venv/bin
   # ../../../Frameworks/ walks: bin/ -> venv/ -> Resources/ -> Contents/Frameworks/
   # @executable_path would resolve relative to the app's main executable, not python3.
   install_name_tool \
-    -change "$PY_FWK_SRC" "@loader_path/../../../Frameworks/Python.dylib" \
-    -change "@executable_path/../Frameworks/Python.dylib" "@loader_path/../../../Frameworks/Python.dylib" \
-    -change "@executable_path/../Frameworks/Python" "@loader_path/../../../Frameworks/Python.dylib" \
+    -change "$PY_FWK_SRC" "@loader_path/../../../Frameworks/Python.framework/Versions/3.14/Python" \
+    -change "@executable_path/../Frameworks/Python.dylib" "@loader_path/../../../Frameworks/Python.framework/Versions/3.14/Python" \
+    -change "@executable_path/../Frameworks/Python" "@loader_path/../../../Frameworks/Python.framework/Versions/3.14/Python" \
     "$py_link" 2>/dev/null || true
 done
 
@@ -116,12 +116,20 @@ dylibbundler -od -b \
   -s "$HB/opt/xz/lib" -s "$HB/opt/zstd/lib" -s "$HB/opt/webp/lib" \
   -d "$FWK" -p "@executable_path/../Frameworks/"
 
-# Copy Python framework dylib AFTER dylibbundler (which wipes and recreates Frameworks/).
-# Named Python.dylib so Finder drag-install doesn't silently drop the extensionless file.
-cp "$PY_FWK_SRC" "$FWK/Python.dylib"
-chmod +w "$FWK/Python.dylib"
-install_name_tool -id "@executable_path/../Frameworks/Python.dylib" "$FWK/Python.dylib"
-codesign "${CODESIGN_ARGS[@]}" "$FWK/Python.dylib"
+# Copy Python framework AFTER dylibbundler (which wipes Frameworks/).
+# Python looks for Resources/Python.app/Contents/MacOS/Python next to the dylib,
+# so we must copy the full framework structure, not just the bare dylib.
+PY_FWK="$FWK/Python.framework/Versions/3.14"
+mkdir -p "$PY_FWK"
+cp "$PY_FWK_SRC" "$PY_FWK/Python"
+chmod +w "$PY_FWK/Python"
+cp -R "$PY_BASE/Resources" "$PY_FWK/"
+# Symlinks that complete the framework layout macOS expects.
+ln -sf "Versions/3.14/Python"    "$FWK/Python.framework/Python"
+ln -sf "Versions/3.14/Resources" "$FWK/Python.framework/Resources"
+ln -sf "3.14"                     "$FWK/Python.framework/Versions/Current"
+# Rewrite the dylib's own id to match where we placed it.
+install_name_tool -id "@executable_path/../Frameworks/Python.framework/Versions/3.14/Python" "$PY_FWK/Python"
 
 # ── 5. App icon ───────────────────────────────────────────────────────────────
 ICONSET=$(mktemp -d)/AppIcon.iconset
@@ -146,8 +154,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>JTagProvenanceStudio</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>5</string>
-  <key>CFBundleShortVersionString</key><string>1.4</string>
+  <key>CFBundleVersion</key><string>6</string>
+  <key>CFBundleShortVersionString</key><string>1.5</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
