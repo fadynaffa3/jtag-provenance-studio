@@ -174,4 +174,8 @@ fi  # end MODE=build
 # ── done ──────────────────────────────────────────────────────────────────────
 printf '\n\033[1m✅ Done!\033[0m\n\n'
 printf '  Launching JTag Provenance Studio…\n\n'
-open -a "JTag Provenance Studio"
+# Use the full path so Launch Services doesn't need to search, and redirect
+# stdio so open works even when stdin is piped from curl.
+sleep 1
+open "/Applications/JTag Provenance Studio.app" </dev/tty >/dev/tty 2>&1 || \
+    open "/Applications/JTag Provenance Studio.app"
