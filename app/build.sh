@@ -70,9 +70,13 @@ for py_link in "$RES/venv/bin/python3" "$RES/venv/bin/python3.14" "$RES/venv/bin
   rm -f "$py_link"
   cp "$PY_BIN_SRC" "$py_link"
   chmod +x "$py_link"
+  # @loader_path is relative to the binary's own directory (venv/bin/), so
+  # ../../../Frameworks/ walks: bin/ -> venv/ -> Resources/ -> Contents/Frameworks/
+  # @executable_path would resolve relative to the app's main executable, not python3.
   install_name_tool \
-    -change "$PY_FWK_SRC" "@executable_path/../Frameworks/Python.dylib" \
-    -change "@executable_path/../Frameworks/Python" "@executable_path/../Frameworks/Python.dylib" \
+    -change "$PY_FWK_SRC" "@loader_path/../../../Frameworks/Python.dylib" \
+    -change "@executable_path/../Frameworks/Python.dylib" "@loader_path/../../../Frameworks/Python.dylib" \
+    -change "@executable_path/../Frameworks/Python" "@loader_path/../../../Frameworks/Python.dylib" \
     "$py_link" 2>/dev/null || true
 done
 
