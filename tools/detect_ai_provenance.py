@@ -135,7 +135,14 @@ class Report:
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        # Return a fake result so callers see a clear "not found" message instead of a traceback.
+        r = subprocess.CompletedProcess(cmd, returncode=127)
+        r.stdout = ""
+        r.stderr = f"{cmd[0]}: command not found — it may not be bundled correctly"
+        return r
 
 
 def metadata_hits(path: Path) -> dict[str, str]:
@@ -573,10 +580,24 @@ def main() -> int:
         return 0
     if not args.inputs:
         parser.error("no inputs")
+
+    # Check that required tools are reachable before doing any work.
+    missing = [t for t in ("exiftool", "c2patool") if not shutil.which(t)]
+    if missing:
+        raise SystemExit(
+            f"Required tool(s) not found: {', '.join(missing)}\n"
+            "If you're running from the app, this is a bundle problem — please report it.\n"
+            "If you're running from source, install with: brew install exiftool c2patool"
+        )
+
     strip = args.strip is not None
     out_dir = Path(args.strip or args.out).expanduser()
     if args.sign and identity() is None:
-        raise SystemExit("--sign needs a signing identity first: --create-identity \"Your Name\"")
+        raise SystemExit(
+            "No signing identity found.\n"
+            "Set one up in the app via 'Set Up Signing Identity…', or run:\n"
+            "  python detect_ai_provenance.py --create-identity \"Your Name\""
+        )
 
     decoders = None if args.no_watermarks else WatermarkDecoders()
     work = Path(args.work).expanduser()

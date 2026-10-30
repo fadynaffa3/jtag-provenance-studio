@@ -85,6 +85,8 @@ cp /opt/homebrew/bin/pdfimages "$BIN/"
 
 # openssl@3 (used by --create-identity for key/cert generation)
 cp /opt/homebrew/opt/openssl@3/bin/openssl "$BIN/openssl3"
+# Symlink as plain "openssl" so the engine's shutil.which("openssl") finds it via PATH.
+ln -sf openssl3 "$BIN/openssl"
 
 # exiftool: Perl script + its lib tree; macOS ships /usr/bin/perl
 cp /opt/homebrew/bin/exiftool "$BIN/"
@@ -150,12 +152,25 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 # ── 7. Sign the full app ──────────────────────────────────────────────────────
-# Sign leaf binaries individually first, then the app bundle.
-# --options runtime enables hardened runtime (required for notarization).
-for f in "$FWK/"*.dylib "$BIN/"* "$RES/venv/bin/python3" "$RES/venv/bin/python3.14" "$RES/venv/bin/python"; do
-  [[ -f "$f" && ! -L "$f" ]] || continue
+# Notarization requires every Mach-O binary and bundle inside the app to be
+# signed with Developer ID + hardened runtime. Sign all leaf binaries first
+# (depth-first), then sign the app bundle itself.
+echo "Signing all binaries…"
+# Find every Mach-O file (executables, dylibs, .so, .bundle) — skip symlinks.
+find "$APP" -type f \( \
+    -name "*.dylib" -o -name "*.so" -o -name "*.bundle" -o \
+    -name "python3" -o -name "python3.*" -o -name "python" \
+  \) | while read -r f; do
+  # Confirm it's actually a Mach-O before signing (some .so are text stubs).
+  file "$f" 2>/dev/null | grep -q "Mach-O" || continue
   codesign "${CODESIGN_ARGS[@]}" "$f" 2>/dev/null || true
 done
+# Sign standalone executables in bin/.
+find "$BIN" -type f | while read -r f; do
+  file "$f" 2>/dev/null | grep -q "Mach-O" || continue
+  codesign "${CODESIGN_ARGS[@]}" "$f" 2>/dev/null || true
+done
+# Finally sign the app bundle (covers the main executable and the bundle itself).
 codesign "${CODESIGN_ARGS[@]}" --deep "$APP"
 echo "Built $(pwd)/$APP"
 
