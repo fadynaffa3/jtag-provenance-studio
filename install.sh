@@ -128,13 +128,16 @@ VENV="$REPO/tools/.venv"
 if [ ! -d "$VENV" ]; then
     python3 -m venv "$VENV"
 fi
-log "Installing Python packages one at a time (this may take several minutes)…"
-"$VENV/bin/pip" install --no-cache-dir pillow
-"$VENV/bin/pip" install --no-cache-dir numpy
-"$VENV/bin/pip" install --no-cache-dir invisible-watermark
-"$VENV/bin/pip" install --no-cache-dir trustmark
-ok "Python packages installed"
-ok "Note: TrustMark model weights (~2 GB) download on first run — internet required once."
+log "Installing base Python packages…"
+"$VENV/bin/pip" install --no-cache-dir pillow numpy
+ok "Base packages installed"
+log "Installing watermark packages (invisible-watermark, trustmark)…"
+log "Note: trustmark pulls in PyTorch (~2 GB) — this will take a while."
+pip_optional() { "$VENV/bin/pip" install --no-cache-dir "$1" 2>&1 || \
+    printf '  \033[33m⚠\033[0m %s install failed — watermark detection will be limited.\n' "$1"; }
+pip_optional invisible-watermark
+pip_optional trustmark
+ok "Python packages done. TrustMark model weights (~2 GB) download on first run."
 
 log "Building JTag Provenance Studio.app…"
 APP_DIR="$REPO/app/JTag Provenance Studio.app"
