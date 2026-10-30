@@ -2,6 +2,8 @@
 
 Scans images and Illustrator/PDF files for AI-provenance signals, removes AI metadata tags, and signs output copies with Content Credentials (C2PA).
 
+*Last updated: October 2026*
+
 ## Disclaimer
 
 **This tool is experimental.** It is provided as-is, without warranty of any kind. All usage is entirely at your own risk and responsibility — including any legal, regulatory, or ethical consequences that may arise from its use.
@@ -19,32 +21,31 @@ The authors make no representations about the accuracy or completeness of detect
 
 ## Install
 
-### Option A — self-contained DMG (nothing to install)
-
-Everything is bundled: Python, ML model weights, exiftool, c2patool, pdfimages, and all shared libraries. No Homebrew, Python, or Xcode needed.
-
-1. Download `JTag Provenance Studio.dmg` from the [latest release](https://github.com/fadynaffa3/jtag-provenance-studio/releases/latest)
-2. Open the DMG and drag **JTag Provenance Studio** into your Applications folder
-3. On first launch, macOS will say it cannot verify the app. To open it anyway:
-   - **Right-click** (or Control-click) the app in Finder → **Open**
-   - Click **Open** in the dialog that appears
-   - You only need to do this once
-
-> The app is ad-hoc signed for local use, not submitted to Apple's notarization service. It does not connect to the internet except to timestamp Content Credentials signatures (optional; offline fallback is built in).
-
-### Option B — install prerequisites + run from source
-
-A single script installs Homebrew (if needed), the required tools, a Python venv, and builds a lightweight Mac app that reads directly from the repo checkout:
+Run the one-line installer — it will ask whether to download the prebuilt app or build from source:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fadynaffa3/jtag-provenance-studio/main/install.sh | sh
 ```
 
-What it does:
+### Option 1 — Download prebuilt app (recommended)
+
+No Xcode or Python needed. The installer:
 - Installs Homebrew if not already present
 - `brew install exiftool c2patool poppler openssl@3`
+- Downloads the latest notarized DMG from GitHub Releases
+- Installs **JTag Provenance Studio.app** to `/Applications`
+- Launches the app
+
+The app is signed with a Developer ID and notarized by Apple — no Gatekeeper warnings.
+
+### Option 2 — Build from source
+
+Requires Xcode Command Line Tools and Homebrew. The installer:
+- Clones the repo to `~/ai-provenance` (or pulls if it already exists)
+- `brew install exiftool c2patool poppler openssl@3`
 - Creates `~/ai-provenance/tools/.venv` and installs `trustmark`, `invisible-watermark`, `pillow`, `numpy`
-- Builds and installs a lightweight `JTag Provenance Studio.app` to `/Applications`
+- Compiles and installs a lightweight `JTag Provenance Studio.app` to `/Applications`
+- Launches the app
 
 > TrustMark model weights (~2 GB total) are downloaded on the **first run**, not during install. Internet access is required once for that download.
 
