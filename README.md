@@ -17,44 +17,56 @@ The authors make no representations about the accuracy or completeness of detect
 - Attempts pixel-level TrustMark watermark removal on detected marks
 - Signs cleaned copies with Content Credentials under your own identity
 
-## Requirements
-
-- macOS 14+, Apple silicon
-- No other prerequisites — everything is bundled in the app
-
 ## Install
+
+### Option A — self-contained DMG (nothing to install)
+
+Everything is bundled: Python, ML model weights, exiftool, c2patool, pdfimages, and all shared libraries. No Homebrew, Python, or Xcode needed.
 
 1. Download `JTag Provenance Studio.dmg` from the [latest release](https://github.com/fadynaffa3/jtag-provenance-studio/releases/latest)
 2. Open the DMG and drag **JTag Provenance Studio** into your Applications folder
-3. On first launch, macOS will say it cannot verify the app because it is not notarized by Apple. To open it anyway:
-   - **Right-click** (or Control-click) the app in Finder and choose **Open**
+3. On first launch, macOS will say it cannot verify the app. To open it anyway:
+   - **Right-click** (or Control-click) the app in Finder → **Open**
    - Click **Open** in the dialog that appears
-   - You only need to do this once — subsequent launches work normally
+   - You only need to do this once
 
-> This warning appears because the app is ad-hoc signed for local use, not submitted to Apple's notarization service. The app does not connect to the internet except to timestamp Content Credentials signatures (optional, offline fallback is built in).
+> The app is ad-hoc signed for local use, not submitted to Apple's notarization service. It does not connect to the internet except to timestamp Content Credentials signatures (optional; offline fallback is built in).
 
-## What it does not need
+### Option B — install prerequisites + run from source
 
-The DMG bundles everything: Python, all ML model weights (TrustMark Q/P/B/C), exiftool, c2patool, pdfimages, and all shared libraries. You do not need Homebrew, Python, or Xcode installed.
+A single script installs Homebrew (if needed), the required tools, a Python venv, and builds a lightweight Mac app that reads directly from the repo checkout:
 
-## For developers: build from source
+```sh
+curl -fsSL https://raw.githubusercontent.com/fadynaffa3/jtag-provenance-studio/main/install.sh | sh
+```
+
+What it does:
+- Installs Homebrew if not already present
+- `brew install exiftool c2patool poppler openssl@3`
+- Creates `~/ai-provenance/tools/.venv` and installs `trustmark`, `invisible-watermark`, `pillow`, `numpy`
+- Builds and installs a lightweight `JTag Provenance Studio.app` to `/Applications`
+
+> TrustMark model weights (~2 GB total) are downloaded on the **first run**, not during install. Internet access is required once for that download.
+
+After the script finishes you can also use the CLI directly:
+
+```sh
+PY=~/ai-provenance/tools/.venv/bin/python
+T=~/ai-provenance/tools/detect_ai_provenance.py
+$PY $T image.png                        # scan only
+$PY $T image.png --strip --out output/  # strip AI tags
+$PY $T image.png --no-watermarks        # fast scan (no watermark check)
+```
+
+## For developers: build the self-contained DMG
 
 See [AGENTS.md](AGENTS.md) for build instructions, CLI usage, and technical invariants.
 
 ```sh
-# Prerequisites for building (not for running the distributed app)
 brew install dylibbundler exiftool c2patool poppler openssl@3
 python3 -m venv tools/.venv
-tools/.venv/bin/pip install trustmark invisible-watermark pillow numpy pyinstaller
-
-# Build the app and DMG
+tools/.venv/bin/pip install trustmark invisible-watermark pillow numpy
 zsh app/build.sh
-
-# Or use the CLI directly from the repo
-PY=tools/.venv/bin/python; T=tools/detect_ai_provenance.py
-$PY $T image.png                         # scan only
-$PY $T image.png --strip --out output/  # strip AI tags, save clean copy
-$PY $T image.png --no-watermarks        # metadata and C2PA only (fast)
 ```
 
 ## License
