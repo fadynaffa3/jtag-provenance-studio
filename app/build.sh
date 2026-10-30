@@ -1,6 +1,16 @@
 #!/bin/zsh
 # Builds a self-contained "JTag Provenance Studio.app" — no Homebrew or Python needed to run.
 # Requires: Xcode, dylibbundler (brew install dylibbundler), and tools/.venv already set up.
+#
+# Signing modes (set SIGN_ID env var before running):
+#   SIGN_ID=""                        → ad-hoc sign (default, local use only)
+#   SIGN_ID="Developer ID Application: Your Name (TEAMID)"  → notarized release build
+#
+# Notarization (only when SIGN_ID is set):
+#   Also set NOTARY_PROFILE — an xcrun notarytool credential profile name.
+#   One-time setup: xcrun notarytool store-credentials "jtag-notary" \
+#     --apple-id "you@example.com" --team-id "TEAMID" --password "app-specific-password"
+#   Then: SIGN_ID="Developer ID Application: ..." NOTARY_PROFILE="jtag-notary" zsh build.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 REPO="$(cd .. && pwd)"
@@ -9,6 +19,18 @@ APP="JTag Provenance Studio.app"
 RES="$APP/Contents/Resources"
 BIN="$RES/bin"
 FWK="$APP/Contents/Frameworks"
+
+# Signing identity: default to ad-hoc if not set.
+SIGN_ID="${SIGN_ID:-}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+
+if [[ -n "$SIGN_ID" ]]; then
+  echo "Signing with: $SIGN_ID"
+  CODESIGN_ARGS=(--force --options runtime --sign "$SIGN_ID")
+else
+  echo "Ad-hoc signing (local use only). Set SIGN_ID for a notarized release build."
+  CODESIGN_ARGS=(--force --sign -)
+fi
 
 rm -rf "$APP" "Provenance Studio.app"
 mkdir -p "$APP/Contents/MacOS" "$RES" "$BIN" "$FWK"
@@ -72,9 +94,7 @@ sed -i '' '1s|.*|#!/usr/bin/perl|' "$BIN/exiftool"
 
 # ── 4. Shared libraries (dylibbundler fixes install_names automatically) ──────
 echo "Bundling shared libraries…"
-# Build the list of Homebrew lib dirs to search so dylibbundler never prompts.
 HB=/opt/homebrew
-# Fix rpath-based dylib refs before dylibbundler runs, so it can resolve them.
 for BIN_FILE in "$BIN/c2patool" "$BIN/pdfimages" "$BIN/openssl3"; do
   install_name_tool -rpath /opt/homebrew/lib "$HB/lib" "$BIN_FILE" 2>/dev/null || true
   install_name_tool -rpath /opt/homebrew/opt/poppler/lib "$HB/opt/poppler/lib" "$BIN_FILE" 2>/dev/null || true
@@ -95,7 +115,7 @@ dylibbundler -od -b \
 cp "$PY_FWK_SRC" "$FWK/Python.dylib"
 chmod +w "$FWK/Python.dylib"
 install_name_tool -id "@executable_path/../Frameworks/Python.dylib" "$FWK/Python.dylib"
-codesign --force --sign - "$FWK/Python.dylib"
+codesign "${CODESIGN_ARGS[@]}" "$FWK/Python.dylib"
 
 # ── 5. App icon ───────────────────────────────────────────────────────────────
 ICONSET=$(mktemp -d)/AppIcon.iconset
@@ -116,7 +136,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
   <key>CFBundleName</key><string>JTag Provenance Studio</string>
   <key>CFBundleDisplayName</key><string>JTag Provenance Studio</string>
-  <key>CFBundleIdentifier</key><string>local.jtag-provenance-studio</string>
+  <key>CFBundleIdentifier</key><string>com.jtag.provenance-studio</string>
   <key>CFBundleExecutable</key><string>JTagProvenanceStudio</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -129,10 +149,17 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign - --deep "$APP"
+# ── 7. Sign the full app ──────────────────────────────────────────────────────
+# Sign leaf binaries individually first, then the app bundle.
+# --options runtime enables hardened runtime (required for notarization).
+for f in "$FWK/"*.dylib "$BIN/"* "$RES/venv/bin/python3" "$RES/venv/bin/python3.14" "$RES/venv/bin/python"; do
+  [[ -f "$f" && ! -L "$f" ]] || continue
+  codesign "${CODESIGN_ARGS[@]}" "$f" 2>/dev/null || true
+done
+codesign "${CODESIGN_ARGS[@]}" --deep "$APP"
 echo "Built $(pwd)/$APP"
 
-# ── 7. DMG installer ──────────────────────────────────────────────────────────
+# ── 8. DMG installer ──────────────────────────────────────────────────────────
 DMG="JTag Provenance Studio.dmg"
 DMG_STAGE=$(mktemp -d)
 cp -R "$APP" "$DMG_STAGE/"
@@ -144,3 +171,18 @@ hdiutil create -volname "JTag Provenance Studio" \
   -o "$DMG" >/dev/null
 rm -rf "$DMG_STAGE"
 echo "DMG: $(pwd)/$DMG"
+
+# ── 9. Notarize and staple (only when SIGN_ID + NOTARY_PROFILE are set) ───────
+if [[ -n "$SIGN_ID" && -n "$NOTARY_PROFILE" ]]; then
+  echo "Submitting to Apple notarization (this takes 1–5 minutes)…"
+  xcrun notarytool submit "$DMG" \
+    --keychain-profile "$NOTARY_PROFILE" \
+    --wait
+  echo "Stapling notarization ticket to DMG…"
+  xcrun stapler staple "$DMG"
+  echo "Notarized and stapled: $DMG"
+elif [[ -n "$SIGN_ID" ]]; then
+  echo ""
+  echo "Signed with Developer ID but not notarized."
+  echo "Set NOTARY_PROFILE to notarize. See build.sh header for setup instructions."
+fi
