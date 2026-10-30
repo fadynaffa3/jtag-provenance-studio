@@ -87,8 +87,8 @@ cp -R "$APP_IN_DMG" /Applications/
 hdiutil detach "$MOUNT_DIR" -quiet
 rm -f "$DMG_TMP"
 
-# Clear quarantine so Gatekeeper doesn't block a notarized app on first open.
-xattr -rd com.apple.quarantine "$DEST" 2>/dev/null || true
+# Clear all extended attributes (including quarantine) from the installed app.
+xattr -rc "$DEST" 2>/dev/null || true
 ok "App installed to /Applications"
 
 fi  # end MODE=download
