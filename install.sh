@@ -21,6 +21,7 @@ die()  { printf '\n\033[31mError: %s\033[0m\n' "$*" >&2; exit 1; }
 # ── sanity checks ─────────────────────────────────────────────────────────────
 [ "$(uname)" = "Darwin" ]   || die "macOS only."
 [ "$(uname -m)" = "arm64" ] || die "Apple silicon (arm64) required."
+[ "$(id -u)" = "0" ]        && die "Do not run this script as root (sudo). Run it as your normal user account."
 os_ver=$(sw_vers -productVersion | cut -d. -f1)
 [ "$os_ver" -ge 14 ] 2>/dev/null || die "macOS 14+ required (you have $(sw_vers -productVersion))."
 
