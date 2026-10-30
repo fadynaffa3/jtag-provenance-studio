@@ -58,7 +58,7 @@ cp -R "$PY_BASE/lib/python3.14" "$RES/python3.14-stdlib"
 cat > "$RES/venv/pyvenv.cfg" <<PYCFG
 home = BUNDLE_PLACEHOLDER
 include-system-site-packages = false
-version = 3.14.6
+version = $PY_VER
 executable = BUNDLE_PLACEHOLDER
 PYCFG
 
@@ -137,6 +137,40 @@ install_name_tool \
   -change "$PY_FWK_SRC" "@loader_path/../../../../Python" \
   "$PY_APP_BIN" 2>/dev/null || true
 
+# ── 4b. Patch stdlib .so files that link against Homebrew dylibs ──────────────
+# Python's lib-dynload/ contains C extensions (_lzma, _ssl, _hashlib, etc.) that
+# were built against Homebrew-signed dylibs. The bundled app is ad-hoc signed with
+# a different Team ID, so the loader rejects them ("mapping process and mapped file
+# have different Team IDs"). Fix: copy each Homebrew dylib into Frameworks/ (if not
+# already there from dylibbundler), rewrite the .so's dependency, and sign the .so.
+echo "Patching stdlib .so Homebrew dependencies…"
+DYNLOAD_DIR="$RES/python3.14-stdlib/lib-dynload"
+patch_so_dep() {
+  local so="$1" old_dep="$2" dylib_name dylib_src
+  dylib_name=$(basename "$old_dep")
+  dylib_src=$(readlink -f "$old_dep" 2>/dev/null || echo "$old_dep")
+  # Copy dylib to Frameworks if not already present (dylibbundler may have done it).
+  if [[ ! -f "$FWK/$dylib_name" ]]; then
+    cp "$dylib_src" "$FWK/$dylib_name"
+    chmod +w "$FWK/$dylib_name"
+    # Set the dylib's own id to the @executable_path form so other things can link it.
+    install_name_tool -id "@executable_path/../Frameworks/$dylib_name" "$FWK/$dylib_name" 2>/dev/null || true
+    codesign "${CODESIGN_ARGS[@]}" "$FWK/$dylib_name" 2>/dev/null || true
+  fi
+  # Use @loader_path so that when Python dlopen()s the .so from lib-dynload/,
+  # the path resolves relative to the .so itself:
+  #   lib-dynload/ -> python3.14-stdlib/ -> Resources/ -> Contents/Frameworks/
+  # That is 3 levels up: ../../../Frameworks/<dylib>
+  install_name_tool -change "$old_dep" "@loader_path/../../../Frameworks/$dylib_name" "$so" 2>/dev/null || true
+}
+find "$DYNLOAD_DIR" -name "*.so" | while read -r so; do
+  chmod +w "$so"
+  otool -L "$so" 2>/dev/null | grep '/opt/homebrew' | awk '{print $1}' | while read -r dep; do
+    patch_so_dep "$so" "$dep"
+  done
+  codesign "${CODESIGN_ARGS[@]}" "$so" 2>/dev/null || true
+done
+
 # ── 5. App icon ───────────────────────────────────────────────────────────────
 ICONSET=$(mktemp -d)/AppIcon.iconset
 mkdir -p "$ICONSET"
@@ -160,8 +194,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>JTagProvenanceStudio</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>8</string>
-  <key>CFBundleShortVersionString</key><string>1.6.1</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
@@ -190,7 +224,16 @@ PY_APP="$FWK/Python.framework/Versions/3.14/Resources/Python.app"
 codesign "${CODESIGN_ARGS[@]}" --deep "$APP"
 echo "Built $(pwd)/$APP"
 
-# ── 8. DMG installer ──────────────────────────────────────────────────────────
+# ── 8. Validate bundle before packaging ──────────────────────────────────────
+echo "Running bundle validation tests…"
+if zsh "$REPO/tests/test_bundle.sh" "$(pwd)/$APP"; then
+    echo "All bundle checks passed."
+else
+    echo "Bundle validation FAILED. Fix the issues above before packaging." >&2
+    exit 1
+fi
+
+# ── 10. DMG installer ─────────────────────────────────────────────────────────
 DMG="JTag Provenance Studio.dmg"
 DMG_STAGE=$(mktemp -d)
 cp -R "$APP" "$DMG_STAGE/"
@@ -203,7 +246,7 @@ hdiutil create -volname "JTag Provenance Studio" \
 rm -rf "$DMG_STAGE"
 echo "DMG: $(pwd)/$DMG"
 
-# ── 9. Notarize and staple (only when SIGN_ID + NOTARY_PROFILE are set) ───────
+# ── 11. Notarize and staple (only when SIGN_ID + NOTARY_PROFILE are set) ──────
 if [[ -n "$SIGN_ID" && -n "$NOTARY_PROFILE" ]]; then
   echo "Submitting to Apple notarization (this takes 1–5 minutes)…"
   xcrun notarytool submit "$DMG" \

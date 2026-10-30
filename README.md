@@ -1,4 +1,4 @@
-# JTag Provenance Studio · v1.6.0
+# JTag Provenance Studio · v0.1.0
 
 Scans images and Illustrator/PDF files for AI-provenance signals, removes AI metadata tags, and signs output copies with Content Credentials (C2PA).
 
