@@ -32,7 +32,17 @@ os_ver=$(sw_vers -productVersion | cut -d. -f1)
 REPO="$HOME/ai-provenance"
 if [ ! -f "$REPO/tools/detect_ai_provenance.py" ]; then
     log "Cloning repository to ~/ai-provenance…"
-    git clone https://github.com/fadynaffa3/jtag-provenance-studio.git "$REPO"
+    if [ -d "$REPO" ]; then
+        # Directory exists but is not a complete checkout — try pulling inside it,
+        # or remove and re-clone if it's not a git repo at all.
+        if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+            git -C "$REPO" pull --ff-only
+        else
+            die "$HOME/ai-provenance already exists but is not a git repo. Move or delete it, then re-run."
+        fi
+    else
+        git clone https://github.com/fadynaffa3/jtag-provenance-studio.git "$REPO"
+    fi
 fi
 ok "Repo at $REPO"
 
@@ -117,5 +127,7 @@ fi
 printf '  CLI usage:\n'
 printf '    PY="%s/bin/python"\n' "$VENV"
 printf '    T="%s/tools/detect_ai_provenance.py"\n' "$REPO"
-printf '    \$PY \$T image.png                        # scan\n'
-printf '    \$PY \$T image.png --strip --out output/  # strip AI tags\n\n'
+# shellcheck disable=SC2016
+printf '    $PY $T image.png                        # scan\n'
+# shellcheck disable=SC2016
+printf '    $PY $T image.png --strip --out output/  # strip AI tags\n\n'
