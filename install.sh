@@ -91,9 +91,11 @@ cp -R "$APP_IN_DMG" /Applications/
 hdiutil detach "$MOUNT_DIR" -quiet
 rm -f "$DMG_TMP"
 
-# Deep-clear quarantine on every file in the bundle so child processes aren't blocked.
-sudo find "$DEST" -print0 | xargs -0 sudo xattr -d com.apple.quarantine 2>/dev/null || true
+# Clear quarantine and re-sign the bundle so nested binaries aren't blocked by Gatekeeper.
 sudo xattr -rc "$DEST" 2>/dev/null || true
+sudo find "$DEST" -print0 | xargs -0 sudo xattr -d com.apple.quarantine 2>/dev/null || true
+# Re-sign ad-hoc after copy — notarization staple doesn't survive hdiutil+cp.
+codesign --force --deep --sign - "$DEST" 2>/dev/null || true
 ok "App installed to /Applications"
 
 fi  # end MODE=download
