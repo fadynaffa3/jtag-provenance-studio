@@ -91,9 +91,9 @@ cp -R "$APP_IN_DMG" /Applications/
 hdiutil detach "$MOUNT_DIR" -quiet
 rm -f "$DMG_TMP"
 
-# Clear quarantine so the notarized app opens without Gatekeeper warnings.
-xattr -rc "$DEST" 2>/dev/null || true
-sudo xattr -rd com.apple.quarantine "$DEST" 2>/dev/null || true
+# Deep-clear quarantine on every file in the bundle so child processes aren't blocked.
+find "$DEST" -print0 | xargs -0 xattr -d com.apple.quarantine 2>/dev/null || true
+sudo xattr -rc "$DEST" 2>/dev/null || true
 ok "App installed to /Applications"
 
 fi  # end MODE=download
