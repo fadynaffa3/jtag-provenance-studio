@@ -168,21 +168,19 @@ PLIST
 # signed with Developer ID + hardened runtime. Sign all leaf binaries first
 # (depth-first), then sign the app bundle itself.
 echo "Signing all binaries…"
-# Find every Mach-O file (executables, dylibs, .so, .bundle) — skip symlinks.
-find "$APP" -type f \( \
-    -name "*.dylib" -o -name "*.so" -o -name "*.bundle" -o \
-    -name "python3" -o -name "python3.*" -o -name "python" \
-  \) | while read -r f; do
-  # Confirm it's actually a Mach-O before signing (some .so are text stubs).
+# Remove PyInstaller bootloaders — unused and can't be signed without their own entitlements.
+rm -rf "$RES/venv/lib/python3.14/site-packages/PyInstaller"
+
+# Sign every Mach-O inside the bundle (depth-first: leaf binaries before bundles).
+# Use find -depth so inner .app bundles are signed before their parents.
+find "$APP" -depth -type f | while read -r f; do
   file "$f" 2>/dev/null | grep -q "Mach-O" || continue
   codesign "${CODESIGN_ARGS[@]}" "$f" 2>/dev/null || true
 done
-# Sign standalone executables in bin/.
-find "$BIN" -type f | while read -r f; do
-  file "$f" 2>/dev/null | grep -q "Mach-O" || continue
-  codesign "${CODESIGN_ARGS[@]}" "$f" 2>/dev/null || true
-done
-# Finally sign the app bundle (covers the main executable and the bundle itself).
+# Sign the nested Python.app bundle explicitly (find -depth handles files but not bundle dirs).
+PY_APP="$FWK/Python.framework/Versions/3.14/Resources/Python.app"
+[[ -d "$PY_APP" ]] && codesign "${CODESIGN_ARGS[@]}" --deep "$PY_APP"
+# Finally sign the top-level app bundle.
 codesign "${CODESIGN_ARGS[@]}" --deep "$APP"
 echo "Built $(pwd)/$APP"
 
