@@ -126,9 +126,29 @@ final class Studio: ObservableObject {
         env["PERLLIB"] = FileManager.default.fileExists(atPath: exiftoolLib)
             ? exiftoolLib : "/opt/homebrew/Cellar/exiftool/\(installedExiftoolVersion())/libexec/lib"
         env["PYTHONUNBUFFERED"] = "1"
+        // Point Python at the bundled stdlib + site-packages so it runs without any system Python.
+        let stdlib = resourcesDir.appendingPathComponent("python3.14-stdlib").path
+        let sitePkgs = resourcesDir.appendingPathComponent("venv/lib/python3.14/site-packages").path
+        if FileManager.default.fileExists(atPath: stdlib) {
+            env["PYTHONPATH"] = stdlib + ":" + sitePkgs
+            // Rewrite pyvenv.cfg with absolute paths each launch (build wrote relative paths).
+            fixPyvenvCfg()
+        }
         process.environment = env
         process.currentDirectoryURL = resourcesDir
         return process
+    }
+
+    private func fixPyvenvCfg() {
+        let cfg = resourcesDir.appendingPathComponent("venv/pyvenv.cfg")
+        let pythonBin = python.path
+        let content = """
+home = \(python.deletingLastPathComponent().path)
+include-system-site-packages = false
+version = 3.14.6
+executable = \(pythonBin)
+"""
+        try? content.write(to: cfg, atomically: true, encoding: .utf8)
     }
 
     private func installedExiftoolVersion() -> String {

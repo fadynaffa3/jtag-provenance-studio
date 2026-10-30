@@ -19,13 +19,29 @@ swiftc -parse-as-library -O -target arm64-apple-macos14 \
 
 # ── 2. Python engine and venv ─────────────────────────────────────────────────
 cp "$REPO/tools/detect_ai_provenance.py" "$RES/"
+PY_VER=$(ls /opt/homebrew/Cellar/python@3.14/ | tail -1)
+PY_BASE="/opt/homebrew/Cellar/python@3.14/$PY_VER/Frameworks/Python.framework/Versions/3.14"
+PY_FWK_SRC="$PY_BASE/Python"
+
 echo "Copying venv (this may take a minute — ~1.4 GB)…"
 cp -R "$VENV" "$RES/venv"
 
+# Bundle the Python standard library (68 MB) — without it Python can't import anything.
+# It lives in the framework, not the venv. Copy it alongside site-packages.
+echo "Copying Python stdlib…"
+cp -R "$PY_BASE/lib/python3.14" "$RES/python3.14-stdlib"
+
+# Clear pyvenv.cfg home/executable — the Swift app rewrites these with correct absolute
+# paths at every launch (since the app can be installed anywhere on the target machine).
+cat > "$RES/venv/pyvenv.cfg" <<PYCFG
+home = BUNDLE_PLACEHOLDER
+include-system-site-packages = false
+version = 3.14.6
+executable = BUNDLE_PLACEHOLDER
+PYCFG
+
 # Rewrite the venv python binaries now (before dylibbundler runs) so they reference the
 # bundled path. We copy the actual dylib AFTER dylibbundler, because -od wipes Frameworks/.
-PY_VER=$(ls /opt/homebrew/Cellar/python@3.14/ | tail -1)
-PY_FWK_SRC="/opt/homebrew/Cellar/python@3.14/$PY_VER/Frameworks/Python.framework/Versions/3.14/Python"
 for py_bin in "$RES/venv/bin/python3" "$RES/venv/bin/python3."*; do
   [[ -f "$py_bin" && ! -L "$py_bin" ]] || continue
   install_name_tool \
