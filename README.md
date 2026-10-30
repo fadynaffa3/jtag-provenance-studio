@@ -43,13 +43,19 @@ The app is signed with a Developer ID and notarized by Apple — no Gatekeeper w
 Requires Xcode Command Line Tools and Homebrew. The installer:
 - Clones the repo to `~/ai-provenance` (or pulls if it already exists)
 - `brew install exiftool c2patool poppler openssl@3`
-- Creates `~/ai-provenance/tools/.venv` and installs `trustmark`, `invisible-watermark`, `pillow`, `numpy`
 - Compiles and installs a lightweight `JTag Provenance Studio.app` to `/Applications`
 - Launches the app
 
-> TrustMark model weights (~2 GB total) are downloaded on the **first run**, not during install. Internet access is required once for that download.
+Watermark detection is optional and not installed automatically. To enable it after install:
 
-After the script finishes you can also use the CLI directly:
+```sh
+python3 -m venv ~/ai-provenance/tools/.venv
+~/ai-provenance/tools/.venv/bin/pip install pillow numpy invisible-watermark trustmark
+```
+
+> TrustMark model weights (~2 GB) download on first use — internet required once.
+
+To use the CLI directly:
 
 ```sh
 PY=~/ai-provenance/tools/.venv/bin/python
