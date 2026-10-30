@@ -132,7 +132,8 @@ final class Studio: ObservableObject {
         let fwkDylib = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Frameworks/Python.framework/Versions/3.14/Python").path
         if FileManager.default.fileExists(atPath: stdlib) {
-            env["PYTHONPATH"] = stdlib + ":" + sitePkgs
+            let dynload = stdlib + "/lib-dynload"
+            env["PYTHONPATH"] = stdlib + ":" + sitePkgs + ":" + dynload
         }
         // Rewrite pyvenv.cfg whenever the bundled framework exists (covers stdlib-present and
         // stdlib-absent bundles alike). Build wrote placeholder paths; this makes them absolute.
