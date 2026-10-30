@@ -41,6 +41,18 @@ esac
 # ══════════════════════════════════════════════════════════════════════════════
 if [ "$MODE" = "download" ]; then
 
+log "Checking Homebrew…"
+if ! command -v brew >/dev/null 2>&1; then
+    log "Installing Homebrew (you may be prompted for your password)…"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+ok "Homebrew $(brew --version | head -1)"
+
+log "Installing required tools…"
+brew install exiftool c2patool poppler openssl@3
+ok "exiftool, c2patool, poppler, openssl@3"
+
 log "Downloading latest JTag Provenance Studio app…"
 
 REPO_SLUG="fadynaffa3/jtag-provenance-studio"
