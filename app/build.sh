@@ -40,14 +40,18 @@ version = 3.14.6
 executable = BUNDLE_PLACEHOLDER
 PYCFG
 
-# Rewrite the venv python binaries now (before dylibbundler runs) so they reference the
-# bundled path. We copy the actual dylib AFTER dylibbundler, because -od wipes Frameworks/.
-for py_bin in "$RES/venv/bin/python3" "$RES/venv/bin/python3."*; do
-  [[ -f "$py_bin" && ! -L "$py_bin" ]] || continue
+# Replace venv python symlinks with real copies of the binary, then rewrite their install
+# names to point at the bundled dylib. Without this the symlinks resolve to Homebrew on the
+# build machine but are dead on any other machine.
+PY_BIN_SRC="$PY_BASE/bin/python3.14"
+for py_link in "$RES/venv/bin/python3" "$RES/venv/bin/python3.14" "$RES/venv/bin/python"; do
+  rm -f "$py_link"
+  cp "$PY_BIN_SRC" "$py_link"
+  chmod +x "$py_link"
   install_name_tool \
-    -change "$PY_FWK_SRC" "@executable_path/../Frameworks/Python" \
-    -change "@executable_path/../Frameworks/Python" "@executable_path/../Frameworks/Python" \
-    "$py_bin" 2>/dev/null || true
+    -change "$PY_FWK_SRC" "@executable_path/../Frameworks/Python.dylib" \
+    -change "@executable_path/../Frameworks/Python" "@executable_path/../Frameworks/Python.dylib" \
+    "$py_link" 2>/dev/null || true
 done
 
 # ── 3. External binaries ──────────────────────────────────────────────────────
@@ -87,10 +91,11 @@ dylibbundler -od -b \
   -d "$FWK" -p "@executable_path/../Frameworks/"
 
 # Copy Python framework dylib AFTER dylibbundler (which wipes and recreates Frameworks/).
-cp "$PY_FWK_SRC" "$FWK/Python"
-chmod +w "$FWK/Python"
-install_name_tool -id "@executable_path/../Frameworks/Python" "$FWK/Python"
-codesign --force --sign - "$FWK/Python"
+# Named Python.dylib so Finder drag-install doesn't silently drop the extensionless file.
+cp "$PY_FWK_SRC" "$FWK/Python.dylib"
+chmod +w "$FWK/Python.dylib"
+install_name_tool -id "@executable_path/../Frameworks/Python.dylib" "$FWK/Python.dylib"
+codesign --force --sign - "$FWK/Python.dylib"
 
 # ── 5. App icon ───────────────────────────────────────────────────────────────
 ICONSET=$(mktemp -d)/AppIcon.iconset
@@ -115,8 +120,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>JTagProvenanceStudio</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>4</string>
-  <key>CFBundleShortVersionString</key><string>1.3</string>
+  <key>CFBundleVersion</key><string>5</string>
+  <key>CFBundleShortVersionString</key><string>1.4</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>

@@ -129,9 +129,14 @@ final class Studio: ObservableObject {
         // Point Python at the bundled stdlib + site-packages so it runs without any system Python.
         let stdlib = resourcesDir.appendingPathComponent("python3.14-stdlib").path
         let sitePkgs = resourcesDir.appendingPathComponent("venv/lib/python3.14/site-packages").path
+        let fwkDylib = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Frameworks/Python.dylib").path
         if FileManager.default.fileExists(atPath: stdlib) {
             env["PYTHONPATH"] = stdlib + ":" + sitePkgs
-            // Rewrite pyvenv.cfg with absolute paths each launch (build wrote relative paths).
+        }
+        // Rewrite pyvenv.cfg whenever the bundled framework exists (covers stdlib-present and
+        // stdlib-absent bundles alike). Build wrote placeholder paths; this makes them absolute.
+        if FileManager.default.fileExists(atPath: fwkDylib) {
             fixPyvenvCfg()
         }
         process.environment = env
