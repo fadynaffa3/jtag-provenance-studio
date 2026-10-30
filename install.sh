@@ -1,9 +1,11 @@
 #!/bin/sh
 # JTag Provenance Studio — installer
 #
-# Downloads the latest notarized DMG from GitHub Releases and installs the app.
-# Everything (Python, tools, ML packages) is bundled inside the app — no
-# Homebrew or Python setup required.
+# Two modes:
+#   download  — download the latest notarized DMG from GitHub Releases (default,
+#               no prerequisites, fastest)
+#   build     — clone the repo and build the app from source (requires Xcode +
+#               Homebrew; the built app reads tools from the checkout)
 #
 # macOS 14+, Apple silicon required.
 #
@@ -22,7 +24,23 @@ die()  { printf '\n\033[31mError: %s\033[0m\n' "$*" >&2; exit 1; }
 os_ver=$(sw_vers -productVersion | cut -d. -f1)
 [ "$os_ver" -ge 14 ] 2>/dev/null || die "macOS 14+ required (you have $(sw_vers -productVersion))."
 
-# ── Install the latest notarized app from GitHub Releases ────────────────────
+# ── mode selection ────────────────────────────────────────────────────────────
+printf '\n\033[1mJTag Provenance Studio — Installer\033[0m\n\n'
+printf '  1) Download prebuilt app  (recommended — notarized, no prerequisites)\n'
+printf '  2) Build from source      (requires Xcode + Homebrew; stays in ~/ai-provenance)\n\n'
+printf 'Choose [1/2, default 1]: '
+# When piped from curl, stdin is the script itself — /dev/tty gives the terminal.
+read -r MODE </dev/tty || MODE=""
+case "$MODE" in
+    2) MODE=build ;;
+    *) MODE=download ;;
+esac
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE: download — fetch latest notarized DMG from GitHub Releases
+# ══════════════════════════════════════════════════════════════════════════════
+if [ "$MODE" = "download" ]; then
+
 log "Downloading latest JTag Provenance Studio app…"
 
 REPO_SLUG="fadynaffa3/jtag-provenance-studio"
@@ -58,6 +76,88 @@ rm -f "$DMG_TMP"
 # Clear quarantine so Gatekeeper doesn't block a notarized app on first open.
 xattr -rd com.apple.quarantine "$DEST" 2>/dev/null || true
 ok "App installed to /Applications"
+
+fi  # end MODE=download
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE: build — clone repo and compile the app from source
+# ══════════════════════════════════════════════════════════════════════════════
+if [ "$MODE" = "build" ]; then
+
+REPO="$HOME/ai-provenance"
+log "Locating repository…"
+if [ ! -f "$REPO/tools/detect_ai_provenance.py" ]; then
+    if [ -d "$REPO" ]; then
+        if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+            git -C "$REPO" pull --ff-only
+        else
+            die "$HOME/ai-provenance already exists but is not a git repo. Move or delete it, then re-run."
+        fi
+    else
+        git clone https://github.com/fadynaffa3/jtag-provenance-studio.git "$REPO"
+    fi
+fi
+ok "Repo at $REPO"
+
+log "Checking Homebrew…"
+if ! command -v brew >/dev/null 2>&1; then
+    log "Installing Homebrew (you may be prompted for your password)…"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+ok "Homebrew $(brew --version | head -1)"
+
+log "Installing Homebrew packages…"
+brew install exiftool c2patool poppler openssl@3
+ok "exiftool, c2patool, poppler, openssl@3"
+
+log "Setting up Python virtual environment (tools/.venv)…"
+VENV="$REPO/tools/.venv"
+if [ ! -d "$VENV" ]; then
+    python3 -m venv "$VENV"
+fi
+log "Installing Python packages (this may take a few minutes)…"
+"$VENV/bin/pip" install trustmark invisible-watermark pillow numpy
+ok "Python packages installed"
+ok "Note: TrustMark model weights (~2 GB) download on first run — internet required once."
+
+log "Building JTag Provenance Studio.app…"
+APP_DIR="$REPO/app/JTag Provenance Studio.app"
+CONTENTS="$APP_DIR/Contents"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+
+if ! swiftc -parse-as-library -O -target arm64-apple-macos14 \
+        -o "$CONTENTS/MacOS/JTagProvenanceStudio" \
+        "$REPO/app/JTagProvenanceStudio.swift" 2>&1; then
+    die "Swift compile failed. Install Xcode Command Line Tools with: xcode-select --install"
+fi
+
+cat > "$CONTENTS/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>JTag Provenance Studio</string>
+  <key>CFBundleDisplayName</key><string>JTag Provenance Studio</string>
+  <key>CFBundleIdentifier</key><string>local.jtag-provenance-studio</string>
+  <key>CFBundleExecutable</key><string>JTagProvenanceStudio</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>dev</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+</dict></plist>
+PLIST
+
+codesign --force --sign - "$APP_DIR" 2>/dev/null || true
+
+DEST="/Applications/JTag Provenance Studio.app"
+rm -rf "$DEST"
+cp -R "$APP_DIR" /Applications/
+xattr -rd com.apple.quarantine "$DEST" 2>/dev/null || true
+ok "App installed to /Applications"
+
+fi  # end MODE=build
 
 # ── done ──────────────────────────────────────────────────────────────────────
 printf '\n\033[1m✅ Done!\033[0m\n\n'
