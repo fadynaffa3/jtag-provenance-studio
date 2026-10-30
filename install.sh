@@ -123,16 +123,11 @@ log "Installing Homebrew packages…"
 brew install exiftool c2patool poppler openssl@3
 ok "exiftool, c2patool, poppler, openssl@3"
 
-log "Setting up Python virtual environment (tools/.venv)…"
-VENV="$REPO/tools/.venv"
-if [ ! -d "$VENV" ]; then
-    python3 -m venv "$VENV"
-fi
-ok "venv ready at $VENV"
 printf '\n'
-printf '  \033[33mNote:\033[0m Watermark detection packages (trustmark, invisible-watermark)\n'
-printf '  require PyTorch (~2 GB) and must be installed manually if needed:\n\n'
-printf '    %s/bin/pip install pillow numpy invisible-watermark trustmark\n\n' "$VENV"
+printf '  \033[33mNote:\033[0m Watermark detection requires a Python venv with ML packages.\n'
+printf '  To enable it, run after install:\n\n'
+printf '    python3 -m venv %s/tools/.venv\n' "$REPO"
+printf '    %s/tools/.venv/bin/pip install pillow numpy invisible-watermark trustmark\n\n' "$REPO"
 printf '  The app works without them — watermark detection will be skipped.\n'
 
 log "Building JTag Provenance Studio.app…"
