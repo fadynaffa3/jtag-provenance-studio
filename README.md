@@ -29,33 +29,22 @@ curl -fsSL https://raw.githubusercontent.com/fadynaffa3/jtag-provenance-studio/m
 
 ### Option 1 — Download prebuilt app (recommended)
 
-No Xcode or Python needed. The installer:
-- Installs Homebrew if not already present
-- `brew install exiftool c2patool poppler openssl@3`
+No Homebrew, Xcode or Python needed — the app is self-contained, watermark models included, and works offline. The installer:
 - Downloads the latest notarized DMG from GitHub Releases
-- Installs **JTag Provenance Studio.app** to `/Applications`
+- Checks its signature, then installs **JTag Provenance Studio.app** to `/Applications` (or `~/Applications` on a standard, non-admin account)
 - Launches the app
 
-The app is signed with a Developer ID and notarized by Apple — no Gatekeeper warnings.
+The app is signed with a Developer ID and notarized by Apple — no Gatekeeper warnings. You can also download the DMG from the [Releases page](https://github.com/fadynaffa3/jtag-provenance-studio/releases) and drag the app to Applications.
 
 ### Option 2 — Build from source
 
-Requires Xcode Command Line Tools and Homebrew. The installer:
+Requires Xcode. The installer:
 - Clones the repo to `~/ai-provenance` (or pulls if it already exists)
-- `brew install exiftool c2patool poppler openssl@3`
-- Compiles and installs a lightweight `JTag Provenance Studio.app` to `/Applications`
-- Launches the app
+- Installs Homebrew if needed, then `brew install dylibbundler exiftool c2patool poppler openssl@3 python@3.14`
+- Creates the Python environment and runs `app/build.sh` (5–10 minutes; downloads the watermark models once)
+- Installs the same self-contained app and launches it
 
-Watermark detection is optional and not installed automatically. To enable it after install:
-
-```sh
-python3 -m venv ~/ai-provenance/tools/.venv
-~/ai-provenance/tools/.venv/bin/pip install pillow numpy invisible-watermark trustmark
-```
-
-> TrustMark model weights (~2 GB) download on first use — internet required once.
-
-To use the CLI directly:
+To use the CLI directly (after a source install):
 
 ```sh
 PY=~/ai-provenance/tools/.venv/bin/python
@@ -70,8 +59,9 @@ $PY $T image.png --no-watermarks        # fast scan (no watermark check)
 See [AGENTS.md](AGENTS.md) for build instructions, CLI usage, and technical invariants.
 
 ```sh
-brew install dylibbundler exiftool c2patool poppler openssl@3
-python3 -m venv tools/.venv
+brew install dylibbundler exiftool c2patool poppler openssl@3 python@3.14
+# Use Homebrew's python3.14 explicitly: plain python3 may be a different install.
+$(brew --prefix python@3.14)/bin/python3.14 -m venv tools/.venv
 tools/.venv/bin/pip install trustmark invisible-watermark pillow numpy
 zsh app/build.sh
 ```

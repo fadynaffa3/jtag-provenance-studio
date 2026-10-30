@@ -45,7 +45,7 @@ final class Studio: ObservableObject {
     }
 
     func refreshIdentity() {
-        let out = runSync(["--show-identity"])
+        let out = runSync(["--show-identity"], includeStderr: false)
         if let data = out.data(using: .utf8),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             signer = obj["name"] as? String
@@ -126,35 +126,18 @@ final class Studio: ObservableObject {
         env["PERLLIB"] = FileManager.default.fileExists(atPath: exiftoolLib)
             ? exiftoolLib : "/opt/homebrew/Cellar/exiftool/\(installedExiftoolVersion())/libexec/lib"
         env["PYTHONUNBUFFERED"] = "1"
-        // Point Python at the bundled stdlib + site-packages so it runs without any system Python.
-        let stdlib = resourcesDir.appendingPathComponent("python3.14-stdlib").path
+        // Never write into the bundle: a new .pyc inside it breaks the code seal. build.sh
+        // ships precompiled .pyc files that Python uses without rewriting them.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        // The bundled Python finds its stdlib inside Python.framework by itself; only the
+        // venv's site-packages needs adding. pyvenv.cfg keeps its build-time placeholders.
         let sitePkgs = resourcesDir.appendingPathComponent("venv/lib/python3.14/site-packages").path
-        let fwkDylib = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Frameworks/Python.framework/Versions/3.14/Python").path
-        if FileManager.default.fileExists(atPath: stdlib) {
-            let dynload = stdlib + "/lib-dynload"
-            env["PYTHONPATH"] = stdlib + ":" + sitePkgs + ":" + dynload
-        }
-        // Rewrite pyvenv.cfg whenever the bundled framework exists (covers stdlib-present and
-        // stdlib-absent bundles alike). Build wrote placeholder paths; this makes them absolute.
-        if FileManager.default.fileExists(atPath: fwkDylib) {
-            fixPyvenvCfg()
+        if FileManager.default.fileExists(atPath: sitePkgs) {
+            env["PYTHONPATH"] = sitePkgs
         }
         process.environment = env
         process.currentDirectoryURL = resourcesDir
         return process
-    }
-
-    private func fixPyvenvCfg() {
-        let cfg = resourcesDir.appendingPathComponent("venv/pyvenv.cfg")
-        let pythonBin = python.path
-        let content = """
-home = \(python.deletingLastPathComponent().path)
-include-system-site-packages = false
-version = 3.14.6
-executable = \(pythonBin)
-"""
-        try? content.write(to: cfg, atomically: true, encoding: .utf8)
     }
 
     private func installedExiftoolVersion() -> String {
@@ -162,11 +145,13 @@ executable = \(pythonBin)
         return (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.last ?? "13.55_1"
     }
 
-    private func runSync(_ args: [String]) -> String {
+    /// Set `includeStderr` to false when the output is parsed: a warning on stderr would
+    /// otherwise corrupt the JSON.
+    private func runSync(_ args: [String], includeStderr: Bool = true) -> String {
         let process = makeProcess(args)
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = pipe
+        process.standardError = includeStderr ? pipe : FileHandle.nullDevice
         guard (try? process.run()) != nil else { return "" }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()

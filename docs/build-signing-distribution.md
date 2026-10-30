@@ -1,15 +1,32 @@
 # Build, Signing & Distribution
 
-This document covers how JTag Provenance Studio is built into a self-contained `.app`, signed, notarized, and distributed — and all the non-obvious decisions made along the way.
+This document covers how JTag Provenance Studio is built into a self-contained `.app`, signed, notarized, and distributed — and the non-obvious decisions made along the way.
 
 ---
 
 ## Overview
 
-The app ships as a notarized DMG containing a fully self-contained `JTag Provenance Studio.app`. "Self-contained" means the user needs no Homebrew, no Python install, no Xcode — just the DMG. Everything (Python 3.14, its standard library, the venv with ML packages, `exiftool`, `c2patool`, `pdfimages`, all shared dylibs) is bundled inside `Contents/`.
+The app ships as a notarized DMG containing a fully self-contained `JTag Provenance Studio.app`. "Self-contained" means the user needs no Homebrew, no Python install, no Xcode and no internet — just the DMG. Everything (Python 3.14 and its standard library, the venv with the ML packages, the TrustMark model weights, `exiftool`, `c2patool`, `pdfimages`, `openssl`, and all their shared libraries) is inside `Contents/`.
 
 Build script: `app/build.sh`
 Bundle validation tests: `tests/test_bundle.sh`
+
+Two rules everything below follows:
+
+1. **Nothing may resolve outside the bundle.** The build Mac has Homebrew, so a library or module that quietly falls back to `/opt/homebrew` works here and fails on every other Mac. The tests run the bundle with Homebrew off `PATH` and fail on any outside load.
+2. **Nothing may write into the bundle after signing.** A new or changed file inside a signed app breaks its seal, and macOS then reports a notarized app as "damaged". That rules out Python writing `.pyc` files, TrustMark downloading weights, and the app rewriting `pyvenv.cfg`.
+
+---
+
+## Build prerequisites
+
+```sh
+brew install dylibbundler exiftool c2patool poppler openssl@3 python@3.14
+$(brew --prefix python@3.14)/bin/python3.14 -m venv tools/.venv
+tools/.venv/bin/pip install trustmark invisible-watermark pillow numpy
+```
+
+The venv must be made from Homebrew's `python3.14`, because the build bundles that same framework; `build.sh` stops if the versions differ. Only one build can run at a time: `build.sh` takes a lock (`app/.build.lock`), because two builds in `app/` delete each other's bundle.
 
 ---
 
@@ -20,33 +37,39 @@ Compiled with `-O -target arm64-apple-macos14`. Outputs to `Contents/MacOS/JTagP
 
 ### 2. Python engine and venv
 - `tools/detect_ai_provenance.py` is copied to `Contents/Resources/`.
+- **TrustMark weights are fetched first.** TrustMark downloads its weights next to its own code on first use, which inside the app would write into the signed bundle (and fail for users who can't write to `/Applications`). The build loads variants Q, P, B and C once in `tools/.venv`, which downloads anything missing (~550 MB, first build only), and then ships them.
 - The entire `tools/.venv` is copied to `Contents/Resources/venv/`.
-- The Python standard library from the Homebrew Python framework (`/opt/homebrew/Cellar/python@3.14/.../lib/python3.14`) is copied to `Contents/Resources/python3.14-stdlib/`. This is required because `venv` only contains site-packages, not stdlib.
-- `venv/pyvenv.cfg` is blanked to `home = BUNDLE_PLACEHOLDER` — the Swift app rewrites it with correct absolute paths at every launch (since the app can be installed anywhere).
-- The venv's `python3`/`python3.14`/`python` symlinks are replaced with real copies of the Python binary, with install names rewritten to `@loader_path/../../../Frameworks/Python.framework/...` so they resolve relative to the binary itself, not the main app executable.
+- `venv/pyvenv.cfg` keeps placeholder paths. Nothing reads them: Python finds its stdlib inside the framework (step 4) and the app adds site-packages through `PYTHONPATH`.
+- The venv's `python3`/`python3.14`/`python` symlinks are replaced with real copies of the Python binary, with install names rewritten to `@loader_path/../../../Frameworks/Python.framework/...`. The symlink is deleted *before* `install_name_tool` runs: running it on the symlink edits Homebrew's own `python3.14` and breaks its signature, after which macOS kills every `python3` start.
+
+Homebrew paths are found with `brew --prefix`, not by listing the Cellar (`ls | tail -1` sorts `3.14.10` before `3.14.9`).
 
 ### 3. External binaries
 - `c2patool` — Content Credentials signer
 - `pdfimages` — from Poppler, extracts images from PDFs
-- `openssl3` — from OpenSSL 3, used for `--create-identity` (key/cert generation); symlinked as `openssl` so `shutil.which("openssl")` finds it
-- `exiftool` — Perl script; shebang patched to `#!/usr/bin/perl` (system Perl, always present on macOS); its lib tree copied to `Contents/Resources/exiftool-lib/`
+- `openssl3` — from OpenSSL 3, used for `--create-identity`; symlinked as `openssl` so `shutil.which("openssl")` finds it
+- `exiftool` — Perl script; shebang patched to `#!/usr/bin/perl` (system Perl); its lib tree copied to `Contents/Resources/exiftool-lib/`
 
-### 4. Shared libraries (dylibbundler)
-`dylibbundler` crawls `c2patool`, `pdfimages`, and `openssl3`, copies their Homebrew dylib dependencies into `Contents/Frameworks/`, and rewrites install names to `@executable_path/../Frameworks/<lib>`.
+### 4. Shared libraries and the Python framework
+`dylibbundler` copies the tools' Homebrew dylib dependencies into `Contents/Frameworks/`. It wipes `Frameworks/` first, so the Python framework is copied afterwards.
 
-**Why `@executable_path` here:** these binaries are in `Contents/Resources/bin/`, and `@executable_path` resolves relative to the main app executable in `Contents/MacOS/`. From `bin/`, the path is `../Frameworks/` — correct.
+The standard library is copied to `Frameworks/Python.framework/Versions/3.14/lib/python3.14` — the framework's real layout. Python locates its stdlib from the framework dylib's own location, so it finds this one. With the stdlib anywhere else, Python falls back to its compiled-in prefix (`/opt/homebrew/...`): on the build Mac that silently loads Homebrew's stdlib, and on a clean Mac it prints "Could not find platform independent libraries". The stdlib's `site-packages` symlink and `config-3.14-darwin` (symlinks to libpython, only used to compile extensions) are removed, since they point back into Homebrew.
 
-The Python framework is copied **after** dylibbundler, because dylibbundler wipes `Frameworks/` before writing. Python requires the full framework structure (`Python.framework/Versions/3.14/Python` + `Resources/Python.app/...`), not just the bare dylib.
+**How `@executable_path` and `@loader_path` resolve** — the cause of most of the breakage so far:
+- `@executable_path` is the main executable of the *running process*, not the app. When the app runs `Resources/bin/c2patool`, it's `Resources/bin/`. When Python loads a library, it's `Resources/venv/bin/`.
+- `@loader_path` is the folder of the binary that contains the reference. It's the same whoever loads it.
 
-### 4b. Patching stdlib `.so` Homebrew dependencies
-Python's `lib-dynload/` contains C extensions (`_lzma`, `_ssl`, `_hashlib`, `_sqlite3`, `_decimal`, `_zstd`, etc.) that were compiled against Homebrew-signed dylibs. This caused "mapping process and mapped file have different Team IDs" errors on macOS — the Homebrew-signed dylibs have a different Team ID from the ad-hoc or Developer ID signature on the bundled app.
+So:
+- **4b.** Stdlib C extensions (`lib-dynload/*.so`) that link to Homebrew dylibs get those dylibs copied into `Frameworks/` and their references rewritten to `@loader_path/../../../../../../<dylib>` (six levels up from `lib-dynload/` is `Contents/Frameworks/`).
+- **4c.** dylibbundler writes `@executable_path/../Frameworks/` into every bundled dylib. Dylib-to-dylib references are rewritten to `@loader_path/<name>`, since they all sit side by side in `Frameworks/`. (Without this, `libssl.4.dylib` loaded by Python looked for `libcrypto.4.dylib` relative to the venv's `python3`.)
+- The tools in `Resources/bin/` are rewritten to `@executable_path/../../Frameworks/<dylib>`. With dylibbundler's `../Frameworks/` they looked in the nonexistent `Resources/Frameworks/` and could not start on any Mac; it went unnoticed because the app also had Homebrew on `PATH`.
 
-**Fix:** For every `.so` in `lib-dynload/` that links to `/opt/homebrew/`:
-1. Copy the Homebrew dylib to `Contents/Frameworks/` (if not already there from dylibbundler).
-2. Rewrite the dylib's own `-id` to `@executable_path/../Frameworks/<name>`.
-3. **Rewrite the dylib's internal cross-dependencies** (other Homebrew dylibs it links to) from `@executable_path/../Frameworks/` to `@loader_path/<name>`. This matters because when `libssl.4.dylib` is loaded via `dlopen` from a `.so` in `lib-dynload/`, `@executable_path` resolves to `Python.app/Contents/MacOS/Python` (the inner Python.app wrapper), not the main app — so `libcrypto.4.dylib` wouldn't be found without this fix.
-4. Rewrite the `.so`'s dependency to `@loader_path/../../../Frameworks/<name>`. From `lib-dynload/`, three levels up reaches `Contents/Frameworks/` (`lib-dynload/ → python3.14-stdlib/ → Resources/ → Contents/`).
-5. Sign the `.so`.
+### 4d. Build-machine leftovers
+- Absolute `LC_RPATH`s (`/opt/homebrew/lib`, Cellar paths, CI paths inside wheels) are deleted, so a missing `@rpath` library can't resolve to Homebrew on Macs that have it.
+- Static libraries (`*.a`, from numpy) and PyInstaller's bootloaders are deleted.
+
+### 4e. Bytecode
+`cp -R` doesn't keep file times, so every copied `.pyc` is stale and Python would rewrite it inside the bundle. All `__pycache__` folders are removed and the stdlib and site-packages are recompiled with `--invalidation-mode unchecked-hash`: Python uses those `.pyc` files as they are, without comparing them to the source. The app also sets `PYTHONDONTWRITEBYTECODE=1`.
 
 ### 5. App icon
 Built from `make_icon.swift` → resized via `sips` → compiled to `AppIcon.icns` via `iconutil`.
@@ -54,35 +77,39 @@ Built from `make_icon.swift` → resized via `sips` → compiled to `AppIcon.icn
 ### 6. Info.plist
 Written inline. Key fields:
 - `CFBundleIdentifier`: `com.jtag.provenance-studio`
-- `CFBundleShortVersionString`: current version (e.g. `0.1.0`)
+- `CFBundleShortVersionString`: `0.1.0`
 - `LSMinimumSystemVersion`: `14.0`
 
-### 7. Sign the full app
-All Mach-O binaries inside the bundle are signed depth-first (leaf binaries before parent bundles). The Python.app sub-bundle is signed explicitly with `--deep`. Then the top-level app bundle is signed.
+### 7. Signing
+Every Mach-O file is signed individually, then the nested bundles (`Python.app`, then `Python.framework/Versions/3.14`), then the app. Any signing failure stops the build. `--deep` is not used for signing: it re-signs nested code with the outer bundle's options and would drop the Python entitlements.
 
-**Ad-hoc signing** (`SIGN_ID` unset): `codesign --force --sign -`. Fine for local use; no Gatekeeper clearance.
+**Ad-hoc** (`SIGN_ID` unset): `codesign --force --sign -`. For local use only.
 
-**Developer ID signing** (`SIGN_ID="Developer ID Application: Fady Naffa (LQWP28E4S9)"`): `codesign --force --options runtime --sign "$SIGN_ID"`. Required for notarization.
+**Developer ID** (`SIGN_ID="Developer ID Application: Fady Naffa (LQWP28E4S9)"`): `codesign --force --options runtime --timestamp --sign "$SIGN_ID"`. The Python executables (`venv/bin/python*` and `Python.app`) also get these entitlements, which Python needs under the hardened runtime:
+- `com.apple.security.cs.allow-unsigned-executable-memory` — ctypes/cffi callbacks
+- `com.apple.security.cs.disable-library-validation` — dylibs shipped inside wheels
 
 ### 8. Bundle validation tests
-`tests/test_bundle.sh` runs before DMG packaging. If any check fails, the build aborts. Checks:
-1. No Mach-O inside the bundle links to a dylib outside the bundle (except `/usr/lib` and `/System`).
-2. No `.so` files in `lib-dynload/` link to `/opt/homebrew/`.
-3. Python can `import hashlib`, `lzma`, `mmap`, `ssl`, `sqlite3`, `_decimal`, `zlib`.
-4. Watermark ML stack (`PIL`, `numpy`, `cv2`, `imwatermark`, `trustmark`) — optional, skipped if not installed.
-5. Code signature is valid.
+`tests/test_bundle.sh` runs on the signed app before anything is notarized or packaged; any failure stops the build. Its runtime checks use a clean environment (`PATH` = bundle `bin` + `/usr/bin:/bin`, the same variables the app sets, a throwaway `HOME`):
+1. Every Mach-O is arm64, every dependency resolves inside the bundle or to the system, and there are no absolute rpaths. A library that uses `@executable_path` fails.
+2. No dangling symlinks.
+3. `c2patool`, `pdfimages`, `openssl` and `exiftool` start.
+4. Python imports its C extensions and the watermark stack, and `sys.base_prefix`, `sys.path` and every loaded module are inside the bundle, with nothing on stderr.
+5. dyld loads nothing from `/opt/homebrew` (`DYLD_PRINT_LIBRARIES`; hardened runtime suppresses this, so it only runs on ad-hoc builds).
+6. TrustMark loads all four variants with downloads blocked.
+7. End to end: a tagged JPEG is fully scanned (watermarks included) and stripped clean; images are extracted from a PDF; an identity is created and an output copy is signed and read back with `c2patool`.
+8. Last: `codesign --verify --deep --strict` still passes after all of the above ran, which proves running the bundle doesn't write into it. On Developer ID builds every Mach-O must also carry the team ID and hardened runtime.
+
+Run it on its own with `zsh tests/test_bundle.sh [path/to/app]`. Run an ad-hoc build first: check 5 only works there.
+
+### 9. Notarize and staple the app
+Only when both `SIGN_ID` and `NOTARY_PROFILE` are set. The app is zipped (`ditto -c -k --keepParent`), notarized and stapled on its own, so it carries its ticket after being copied out of the DMG and opens without a network check. On a rejection the build prints Apple's log and stops.
 
 ### 10. DMG
-Staged into a temp dir with an `/Applications` symlink, then packed with `hdiutil create -format UDZO`.
+The app is copied with `ditto` (which keeps the stapled ticket), its signature is verified again, and it's packed with an `/Applications` symlink using `hdiutil create -format UDZO`. With `SIGN_ID` set the DMG is signed too.
 
-### 11. Notarization and stapling
-Only when both `SIGN_ID` and `NOTARY_PROFILE` are set:
-```sh
-xcrun notarytool submit "JTag Provenance Studio.dmg" \
-  --keychain-profile "jtag-notary" --wait
-xcrun stapler staple "JTag Provenance Studio.dmg"
-```
-Takes 1–5 minutes. The stapled ticket is embedded in the DMG so it works offline.
+### 11. Notarize and staple the DMG
+The DMG is notarized and stapled, then checked with `spctl --assess` (both the DMG and the app).
 
 ---
 
@@ -95,7 +122,7 @@ Takes 1–5 minutes. The stapled ticket is embedded in the DMG so it works offli
 One-time setup for the notarization profile:
 ```sh
 xcrun notarytool store-credentials "jtag-notary" \
-  --apple-id "fadynaffa3@gmail.com" \
+  --apple-id "<apple-id>" \
   --team-id "LQWP28E4S9" \
   --password "<app-specific-password>"
 ```
@@ -107,7 +134,7 @@ The app's own signing identity (for C2PA — separate from the build signing) li
 ## Running a release build
 
 ```sh
-# Ad-hoc (verify tests pass first, fast)
+# Ad-hoc first: all test checks run (including the dyld check), fast to iterate
 zsh app/build.sh
 
 # Notarized release
@@ -120,54 +147,46 @@ After a successful notarized build:
 ```sh
 git tag v0.1.0
 git push origin v0.1.0
-gh release create v0.1.0 \
+gh release create v0.1.0 "app/JTag Provenance Studio.dmg" \
   --title "JTag Provenance Studio v0.1.0" \
   --notes "..."
-gh release upload v0.1.0 "app/JTag Provenance Studio.dmg" --clobber
 ```
 
 ---
 
 ## Install script (`install.sh`)
 
-Two modes, prompted interactively:
+Run as the normal user (it refuses `sudo`). It installs into `/Applications` when the user can write there, otherwise into `~/Applications`, so standard accounts need no password. Two modes, prompted interactively:
 
 **Option 1 — Download prebuilt DMG (recommended)**
-- Installs Homebrew if absent
-- `brew install exiftool c2patool poppler openssl@3`
-- Downloads the latest DMG from GitHub Releases (`gh release download` or `curl` fallback)
-- Mounts, copies app to `/Applications`, unmounts
-- Runs `codesign --verify` and clears quarantine
+- Downloads the latest DMG from GitHub Releases into a temporary folder
+- Mounts it read-only and verifies the app's signature; a broken signature stops the install rather than being papered over
+- Copies the app with `ditto` and unmounts (also on failure)
 - Launches the app
 
-**Option 2 — Build from source**
-- Clones repo to `~/ai-provenance` (or pulls if present)
-- `brew install exiftool c2patool poppler openssl@3`
-- `zsh app/build.sh` (ad-hoc signed)
-- Copies app to `/Applications`
+No Homebrew or other tools are installed: the app is self-contained.
 
-**After install, re-signing:**
-The installer runs `codesign -s - --deep --force "/Applications/JTag Provenance Studio.app"` after copying, because the notarization staple doesn't survive `cp` — the quarantine attribute is cleared and the ad-hoc re-sign ensures macOS accepts the app without Gatekeeper warnings on machines that haven't downloaded it.
+**Option 2 — Build from source**
+- Clones the repo to `~/ai-provenance` (or pulls if present)
+- Needs Xcode; installs Homebrew if missing, then `brew install dylibbundler exiftool c2patool poppler openssl@3 python@3.14`
+- Creates `tools/.venv` from Homebrew's `python3.14` and installs the Python packages
+- Runs `zsh app/build.sh` (ad-hoc signed, same self-contained app as the release) and installs it
 
 ---
 
-## PYTHONPATH in the app
+## Environment the app gives the CLI
 
-The Swift app (`JTagProvenanceStudio.swift`, `makeProcess()`) sets:
-```
-PYTHONPATH = <stdlib>:<site-packages>:<lib-dynload>
-```
-where:
-- `stdlib` = `Contents/Resources/python3.14-stdlib`
-- `site-packages` = `Contents/Resources/venv/lib/python3.14/site-packages`
-- `lib-dynload` = `Contents/Resources/python3.14-stdlib/lib-dynload`
+`makeProcess()` in `JTagProvenanceStudio.swift` sets:
+- `PATH` = `Contents/Resources/bin`, then `/opt/homebrew/bin:/usr/local/bin` (only used by dev builds without bundled tools), then the inherited `PATH`
+- `PERLLIB` = `Contents/Resources/exiftool-lib`
+- `PYTHONPATH` = `Contents/Resources/venv/lib/python3.14/site-packages`
+- `PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1`
 
-`lib-dynload` must be explicit because Python doesn't add it automatically when running from a venv whose home points into a bundled framework rather than a standard Homebrew prefix.
+`--show-identity` is read from stdout only, so a warning on stderr can't corrupt its JSON and silently turn signing off.
 
 ---
 
 ## Known non-issues
 
-- **`install_name_tool` warnings about invalidating code signature** — expected; the subsequent `codesign` step re-signs everything.
-- **PyInstaller bootloaders removed** — `venv/lib/python3.14/site-packages/PyInstaller/` is deleted before signing because those bootloaders can't be signed without their own entitlements and are unused.
-- **dylibbundler wipes `Frameworks/`** — this is why the Python framework is copied in a separate step after dylibbundler runs.
+- **Pillow loads `libfribidi` from Homebrew on the build Mac.** It's an optional `dlopen` for bidirectional text; on a clean Mac it isn't found and Pillow does without it. The dyld check allows exactly this library.
+- **The engine loads all four TrustMark variants with their encoder and remover on every scan**, which is most of a scan's start-up time. Loading only the decoders would be faster; that's an engine change, not a packaging one.

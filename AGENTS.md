@@ -10,23 +10,24 @@ output copies with Content Credentials (C2PA). It has two parts:
 | `app/make_icon.swift` | Draws the app icon. `build.sh` turns it into `AppIcon.icns`. |
 | `app/build.sh` | Builds `app/JTag Provenance Studio.app`. |
 
-The app finds the CLI at the fixed path `~/ai-provenance/tools`, so the repo must be checked out at
-`~/ai-provenance`.
+`build.sh` produces a self-contained app: the CLI, Python, the venv, the TrustMark weights and the
+tools all live inside the bundle. See `docs/build-signing-distribution.md` for how and why.
 
 ## Prerequisites (macOS, Apple silicon)
 
 - **Xcode**, for `swiftc`, `swift` and `iconutil`.
 - **Homebrew tools:**
   ```sh
-  brew install exiftool c2patool poppler openssl@3   # poppler provides pdfimages
+  brew install dylibbundler exiftool c2patool poppler openssl@3 python@3.14   # poppler provides pdfimages
   ```
-- **Python 3.12+ virtualenv** in `tools/.venv`. Watermark decoding needs these packages:
+- **Python virtualenv** in `tools/.venv`, made from **Homebrew's** `python3.14` (the build bundles
+  that framework and refuses a venv from another Python; plain `python3` may be python.org's):
   ```sh
-  python3 -m venv tools/.venv
+  $(brew --prefix python@3.14)/bin/python3.14 -m venv tools/.venv
   tools/.venv/bin/pip install trustmark invisible-watermark pillow numpy
   ```
-  TrustMark downloads its decoder weights (variants Q, P, B, C) the first time it runs, so that
-  first run needs internet.
+  `build.sh` downloads the TrustMark weights (variants Q, P, B, C, ~550 MB) into the venv on the
+  first build, so that build needs internet.
 
 ## Build and run the app
 
@@ -36,9 +37,12 @@ open app/"JTag Provenance Studio.app"
 ```
 
 - To pick up changes to the Swift file or the icon, quit the app (⌘Q) and rebuild.
-- Changes to the Python script take effect on the next run, with no rebuild.
-- The build is ad-hoc signed (`codesign -s -`). That's fine for local use. Distributing the app
-  would need a Developer ID and notarization.
+- The app runs the copy of the Python script inside the bundle, so changes to it also need a rebuild.
+  Run it straight from `tools/` while iterating.
+- Only one build at a time: `build.sh` locks `app/.build.lock`, because two builds delete each
+  other's bundle.
+- The build is ad-hoc signed (`codesign -s -`) by default. That's fine for local use. Releases
+  are built with `SIGN_ID` and `NOTARY_PROFILE` set; see `docs/build-signing-distribution.md`.
 - Closing the window doesn't quit the app. Use ⌘N to get a window back.
 - Apps started from Finder get a minimal `PATH`, so the app prepends `/opt/homebrew/bin:/usr/local/bin`
   before it runs the CLI.
@@ -88,7 +92,14 @@ re-extract, delete that folder.
 
 ## Testing
 
-There is no test suite yet. Test changes on throwaway files in a scratch folder:
+`build.sh` runs `tests/test_bundle.sh` on every build and stops before packaging if it fails. It
+checks the bundle the way a Mac without Homebrew would run it: every library and Python module
+resolves inside the bundle, the tools start, TrustMark loads offline, a scan/strip/sign round trip
+works, and the signature still verifies afterwards (nothing may write into the bundle). Run it on
+its own with `zsh tests/test_bundle.sh`.
+
+There is no unit test suite for the engine yet. Test engine changes on throwaway files in a
+scratch folder:
 
 - **Tagged image:** create a small PNG or JPEG with PIL, add tags with exiftool, then run
   `--strip --rename` and check that the output copy reports clean:

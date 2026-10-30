@@ -5,7 +5,7 @@
 #   download  — download the latest notarized DMG from GitHub Releases (default,
 #               no prerequisites, fastest)
 #   build     — clone the repo and build the app from source (requires Xcode +
-#               Homebrew; the built app reads tools from the checkout)
+#               Homebrew; builds the same self-contained app as the release)
 #
 # macOS 14+, Apple silicon required.
 #
@@ -42,30 +42,34 @@ case "$MODE" in
     *) MODE=download ;;
 esac
 
+# Install into /Applications when this user can write there; otherwise (a standard,
+# non-admin account) into ~/Applications, which needs no password.
+if [ -w /Applications ]; then
+    INSTALL_DIR=/Applications
+else
+    INSTALL_DIR="$HOME/Applications"
+    mkdir -p "$INSTALL_DIR"
+fi
+DEST="$INSTALL_DIR/JTag Provenance Studio.app"
+
+WORKDIR=$(mktemp -d)
+MOUNT_DIR="$WORKDIR/mnt"
+cleanup() {
+    [ -d "$MOUNT_DIR" ] && hdiutil detach "$MOUNT_DIR" -quiet 2>/dev/null
+    rm -rf "$WORKDIR"
+}
+trap cleanup EXIT
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MODE: download — fetch latest notarized DMG from GitHub Releases
 # ══════════════════════════════════════════════════════════════════════════════
 if [ "$MODE" = "download" ]; then
 
-log "Checking Homebrew…"
-if ! command -v brew >/dev/null 2>&1; then
-    log "Installing Homebrew (you may be prompted for your password)…"
-    if [ -d /opt/homebrew ] && [ ! -w /opt/homebrew ]; then
-        sudo chown -R "$(id -un)" /opt/homebrew
-    fi
-    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    eval "$(/opt/homebrew/bin/brew shellenv)"
-fi
-ok "Homebrew $(brew --version | head -1)"
-
-log "Installing required tools…"
-brew install exiftool c2patool poppler openssl@3
-ok "exiftool, c2patool, poppler, openssl@3"
-
+# The app bundles Python, exiftool, c2patool, pdfimages, openssl and the watermark models
+# (tests/test_bundle.sh checks this), so nothing else is installed.
 log "Downloading latest JTag Provenance Studio app…"
 
 REPO_SLUG="fadynaffa3/jtag-provenance-studio"
-# GitHub replaces spaces with dots in uploaded asset filenames.
 DOWNLOAD_URL=$(curl -fsSL "https://api.github.com/repos/$REPO_SLUG/releases/latest" \
   | grep '"browser_download_url"' | grep -i '\.dmg' | head -1 \
   | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')
@@ -75,109 +79,74 @@ if [ -z "$DOWNLOAD_URL" ]; then
 fi
 
 ok "Found: $DOWNLOAD_URL"
-DMG_TMP=$(mktemp /tmp/jtag-XXXXXX.dmg)
-printf '  Downloading (~1 GB, this will take a minute)…\n'
+DMG_TMP="$WORKDIR/JTag-Provenance-Studio.dmg"
+printf '  Downloading (~1 GB, this will take a few minutes)…\n'
 curl -fL --progress-bar -o "$DMG_TMP" "$DOWNLOAD_URL"
 ok "Downloaded"
 
-# Mount, copy app, unmount.
-MOUNT_DIR=$(mktemp -d)
-hdiutil attach "$DMG_TMP" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
-DEST="/Applications/JTag Provenance Studio.app"
-rm -rf "$DEST"
-# The app inside the DMG may have dots or spaces in the name — find it.
+mkdir -p "$MOUNT_DIR"
+hdiutil attach "$DMG_TMP" -mountpoint "$MOUNT_DIR" -nobrowse -readonly -quiet \
+    || die "Could not open the downloaded DMG. Try again; if it keeps failing, download it from https://github.com/$REPO_SLUG/releases"
 APP_IN_DMG=$(find "$MOUNT_DIR" -maxdepth 1 -name "*.app" | head -1)
-cp -R "$APP_IN_DMG" /Applications/
-hdiutil detach "$MOUNT_DIR" -quiet
-rm -f "$DMG_TMP"
+[ -n "$APP_IN_DMG" ] || die "No app found inside the DMG."
 
-# Clear quarantine and re-sign the bundle so nested binaries aren't blocked by Gatekeeper.
-sudo xattr -rc "$DEST" 2>/dev/null || true
-sudo find "$DEST" -print0 | xargs -0 sudo xattr -d com.apple.quarantine 2>/dev/null || true
-# Re-sign ad-hoc after copy — notarization staple doesn't survive hdiutil+cp.
-codesign --force --deep --sign - "$DEST" 2>/dev/null || true
-ok "App installed to /Applications"
+# A release is signed with Developer ID and notarized. If the signature doesn't verify,
+# the download is damaged or tampered with; don't install it.
+codesign --verify --deep --strict "$APP_IN_DMG" 2>/dev/null \
+    || die "The downloaded app's signature is invalid, so it was not installed. Please report this at https://github.com/$REPO_SLUG/issues"
+ok "Signature verified"
+
+rm -rf "$DEST"
+ditto "$APP_IN_DMG" "$DEST"
+# curl doesn't quarantine downloads; clear it anyway in case the DMG came from a browser.
+xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+ok "App installed to $INSTALL_DIR"
 
 fi  # end MODE=download
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MODE: build — clone repo and compile the app from source
+# MODE: build — clone repo and build the self-contained app from source
 # ══════════════════════════════════════════════════════════════════════════════
 if [ "$MODE" = "build" ]; then
 
 REPO="$HOME/ai-provenance"
 log "Locating repository…"
-if [ ! -f "$REPO/tools/detect_ai_provenance.py" ]; then
-    if [ -d "$REPO" ]; then
-        if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
-            git -C "$REPO" pull --ff-only
-        else
-            die "$HOME/ai-provenance already exists but is not a git repo. Move or delete it, then re-run."
-        fi
-    else
-        git clone https://github.com/fadynaffa3/jtag-provenance-studio.git "$REPO"
-    fi
+if [ -d "$REPO/.git" ]; then
+    git -C "$REPO" pull --ff-only
+elif [ -e "$REPO" ]; then
+    die "$REPO already exists but is not a git repo. Move or delete it, then re-run."
+else
+    git clone https://github.com/fadynaffa3/jtag-provenance-studio.git "$REPO"
 fi
 ok "Repo at $REPO"
+
+xcode-select -p >/dev/null 2>&1 || die "Xcode is required to build. Install it from the App Store, then re-run."
 
 log "Checking Homebrew…"
 if ! command -v brew >/dev/null 2>&1; then
     log "Installing Homebrew (you may be prompted for your password)…"
-    # Fix ownership of /opt/homebrew if it exists but is owned by root.
-    if [ -d /opt/homebrew ] && [ ! -w /opt/homebrew ]; then
-        sudo chown -R "$(id -un)" /opt/homebrew
-    fi
     NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     eval "$(/opt/homebrew/bin/brew shellenv)"
 fi
 ok "Homebrew $(brew --version | head -1)"
 
-log "Installing Homebrew packages…"
-brew install exiftool c2patool poppler openssl@3
-ok "exiftool, c2patool, poppler, openssl@3"
+log "Installing build dependencies…"
+brew install dylibbundler exiftool c2patool poppler openssl@3 python@3.14
+ok "dylibbundler, exiftool, c2patool, poppler, openssl@3, python@3.14"
 
-printf '\n'
-printf '  \033[33mNote:\033[0m Watermark detection requires a Python venv with ML packages.\n'
-printf '  To enable it, run after install:\n\n'
-printf '    python3 -m venv %s/tools/.venv\n' "$REPO"
-printf '    %s/tools/.venv/bin/pip install pillow numpy invisible-watermark trustmark\n\n' "$REPO"
-printf '  The app works without them — watermark detection will be skipped.\n'
+# The venv must come from Homebrew's python3.14: build.sh bundles that same framework.
+log "Setting up the Python environment…"
+PY="$(brew --prefix python@3.14)/bin/python3.14"
+"$PY" -m venv --clear "$REPO/tools/.venv"
+"$REPO/tools/.venv/bin/pip" install -q trustmark invisible-watermark pillow numpy
+ok "Python packages installed"
 
-log "Building JTag Provenance Studio.app…"
-APP_DIR="$REPO/app/JTag Provenance Studio.app"
-CONTENTS="$APP_DIR/Contents"
-mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+log "Building JTag Provenance Studio.app (downloads watermark models once; 5–10 minutes)…"
+zsh "$REPO/app/build.sh" || die "Build failed; see the messages above."
 
-if ! swiftc -parse-as-library -O -target arm64-apple-macos14 \
-        -o "$CONTENTS/MacOS/JTagProvenanceStudio" \
-        "$REPO/app/JTagProvenanceStudio.swift" 2>&1; then
-    die "Swift compile failed. Install Xcode Command Line Tools with: xcode-select --install"
-fi
-
-cat > "$CONTENTS/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleName</key><string>JTag Provenance Studio</string>
-  <key>CFBundleDisplayName</key><string>JTag Provenance Studio</string>
-  <key>CFBundleIdentifier</key><string>local.jtag-provenance-studio</string>
-  <key>CFBundleExecutable</key><string>JTagProvenanceStudio</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>CFBundleShortVersionString</key><string>dev</string>
-  <key>LSMinimumSystemVersion</key><string>14.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>NSPrincipalClass</key><string>NSApplication</string>
-</dict></plist>
-PLIST
-
-codesign --force --sign - "$APP_DIR" 2>/dev/null || true
-
-DEST="/Applications/JTag Provenance Studio.app"
 rm -rf "$DEST"
-cp -R "$APP_DIR" /Applications/
-xattr -rd com.apple.quarantine "$DEST" 2>/dev/null || true
-ok "App installed to /Applications"
+ditto "$REPO/app/JTag Provenance Studio.app" "$DEST"
+ok "App installed to $INSTALL_DIR"
 
 fi  # end MODE=build
 
@@ -187,5 +156,4 @@ printf '  Launching JTag Provenance Studio…\n\n'
 # Use the full path so Launch Services doesn't need to search, and redirect
 # stdio so open works even when stdin is piped from curl.
 sleep 1
-open "/Applications/JTag Provenance Studio.app" </dev/tty >/dev/tty 2>&1 || \
-    open "/Applications/JTag Provenance Studio.app"
+open "$DEST" </dev/tty >/dev/tty 2>&1 || open "$DEST"
