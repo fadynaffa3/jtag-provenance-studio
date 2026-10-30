@@ -128,8 +128,11 @@ VENV="$REPO/tools/.venv"
 if [ ! -d "$VENV" ]; then
     python3 -m venv "$VENV"
 fi
-log "Installing Python packages (this may take a few minutes)…"
-"$VENV/bin/pip" install trustmark invisible-watermark pillow numpy
+log "Installing Python packages one at a time (this may take several minutes)…"
+"$VENV/bin/pip" install --no-cache-dir pillow
+"$VENV/bin/pip" install --no-cache-dir numpy
+"$VENV/bin/pip" install --no-cache-dir invisible-watermark
+"$VENV/bin/pip" install --no-cache-dir trustmark
 ok "Python packages installed"
 ok "Note: TrustMark model weights (~2 GB) download on first run — internet required once."
 
