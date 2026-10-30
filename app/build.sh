@@ -171,6 +171,23 @@ find "$DYNLOAD_DIR" -name "*.so" | while read -r so; do
   codesign "${CODESIGN_ARGS[@]}" "$so" 2>/dev/null || true
 done
 
+# ── 4c. Make dylib-to-dylib references in Frameworks/ loader-relative ─────────
+# dylibbundler writes @executable_path/../Frameworks/ into every bundled dylib. That
+# only resolves when the main app binary is the executable. When Python loads e.g.
+# libssl.4.dylib from a lib-dynload .so, @executable_path is the inner Python.app,
+# so libssl can't find libcrypto. All these dylibs sit side by side in Frameworks/,
+# so @loader_path/<name> resolves correctly whoever the executable is.
+echo "Rewriting Frameworks/ dylib cross-references to @loader_path…"
+for dylib in "$FWK"/*.dylib; do
+  deps=("${(@f)$(otool -L "$dylib" | tail -n +3 | awk '{print $1}' | grep '^@executable_path/../Frameworks/' || true)}")
+  [[ -z "${deps[1]}" ]] && continue
+  chmod +w "$dylib"
+  for dep in "${deps[@]}"; do
+    install_name_tool -change "$dep" "@loader_path/${dep:t}" "$dylib"
+  done
+  codesign "${CODESIGN_ARGS[@]}" "$dylib"
+done
+
 # ── 5. App icon ───────────────────────────────────────────────────────────────
 ICONSET=$(mktemp -d)/AppIcon.iconset
 mkdir -p "$ICONSET"
