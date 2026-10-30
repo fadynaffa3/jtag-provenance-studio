@@ -61,34 +61,29 @@ ok "exiftool, c2patool, poppler, openssl@3"
 log "Downloading latest JTag Provenance Studio app…"
 
 REPO_SLUG="fadynaffa3/jtag-provenance-studio"
-ASSET_NAME="JTag Provenance Studio.dmg"
+# GitHub replaces spaces with dots in uploaded asset filenames.
 DOWNLOAD_URL=$(curl -fsSL "https://api.github.com/repos/$REPO_SLUG/releases/latest" \
-  | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for a in data.get('assets', []):
-    if a['name'] == 'JTag Provenance Studio.dmg':
-        print(a['browser_download_url'])
-        break
-")
+  | grep '"browser_download_url"' | grep -i '\.dmg' | head -1 \
+  | sed 's/.*"browser_download_url": *"\([^"]*\)".*/\1/')
 
 if [ -z "$DOWNLOAD_URL" ]; then
     die "Could not find the DMG in the latest GitHub release. Check https://github.com/$REPO_SLUG/releases"
 fi
 
-ok "Found release: $DOWNLOAD_URL"
+ok "Found: $DOWNLOAD_URL"
 DMG_TMP=$(mktemp /tmp/jtag-XXXXXX.dmg)
-printf '  Downloading DMG (this may take a minute — it is ~2 GB)…\n'
-curl -fL --progress-bar -o "$DMG_TMP" "$DOWNLOAD_URL" 2>&1 || \
-    curl -fL --no-progress-meter -o "$DMG_TMP" "$DOWNLOAD_URL"
-ok "Downloaded DMG"
+printf '  Downloading (~1 GB, this will take a minute)…\n'
+curl -fL --progress-bar -o "$DMG_TMP" "$DOWNLOAD_URL"
+ok "Downloaded"
 
 # Mount, copy app, unmount.
 MOUNT_DIR=$(mktemp -d)
 hdiutil attach "$DMG_TMP" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
 DEST="/Applications/JTag Provenance Studio.app"
 rm -rf "$DEST"
-cp -R "$MOUNT_DIR/JTag Provenance Studio.app" /Applications/
+# The app inside the DMG may have dots or spaces in the name — find it.
+APP_IN_DMG=$(find "$MOUNT_DIR" -maxdepth 1 -name "*.app" | head -1)
+cp -R "$APP_IN_DMG" /Applications/
 hdiutil detach "$MOUNT_DIR" -quiet
 rm -f "$DMG_TMP"
 
