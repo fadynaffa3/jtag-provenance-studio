@@ -468,15 +468,31 @@ def make_output(report: Report, out_dir: Path, strip: bool, sign: bool, ai: bool
             notes.append("no AI tags to remove")
     if strip and decoders and source.suffix.lower() in IMAGE_SUFFIXES:
         notes += _remove_watermarks(report, target, decoders)
+    # For .ai/.pdf containers, attempt watermark removal on the embedded images in-place
+    # (in the work folder). The cleaned versions can be re-placed in Illustrator.
+    if strip and decoders and source.suffix.lower() in CONTAINER_SUFFIXES and embedded:
+        cleaned_embedded = []
+        for emb in embedded:
+            emb_path = Path(emb.path)
+            if any(v.startswith("PRESENT") for v in emb.watermarks.values()):
+                emb_notes = _remove_watermarks(emb, emb_path, decoders)
+                if any("removed" in n for n in emb_notes):
+                    cleaned_embedded.append(emb_path.name)
+        if cleaned_embedded:
+            notes.append(
+                f"TrustMark watermark removed from embedded image(s): {', '.join(cleaned_embedded)} "
+                f"(in work folder — re-place in Illustrator to update the .ai file)"
+            )
     if sign:
         # Keep an existing manifest's history as the parent unless it was just stripped.
         notes.append(sign_file(target, ai, source if report.c2pa and not strip else None))
     if name != source.name:
         notes.append(f"renamed from {source.name}")
     wm_removed = any("TrustMark watermark removed" in n for n in notes)
+    # Suppress "still in pixels" for any TrustMark entry that was successfully removed.
     marked = [f"{Path(r.path).name}: {k}" for r in [report, *embedded]
               for k, v in r.watermarks.items()
-              if v.startswith("PRESENT") and not (wm_removed and k.startswith("TrustMark"))]
+              if v.startswith("PRESENT") and not (k.startswith("TrustMark") and wm_removed)]
     if marked:
         notes.append(f"invisible watermark still in the pixels ({'; '.join(marked[:5])}"
                      f"{'; ...' if len(marked) > 5 else ''}): it identifies the source even with the tags removed")
