@@ -128,8 +128,14 @@ cp -R "$PY_BASE/Resources" "$PY_FWK/"
 ln -sf "Versions/3.14/Python"    "$FWK/Python.framework/Python"
 ln -sf "Versions/3.14/Resources" "$FWK/Python.framework/Resources"
 ln -sf "3.14"                     "$FWK/Python.framework/Versions/Current"
-# Rewrite the dylib's own id to match where we placed it.
+# Rewrite the dylib's own id.
 install_name_tool -id "@executable_path/../Frameworks/Python.framework/Versions/3.14/Python" "$PY_FWK/Python"
+# Also rewrite the Python.app wrapper binary — it links to the Homebrew absolute path.
+PY_APP_BIN="$PY_FWK/Resources/Python.app/Contents/MacOS/Python"
+chmod +w "$PY_APP_BIN"
+install_name_tool \
+  -change "$PY_FWK_SRC" "@loader_path/../../../../Python" \
+  "$PY_APP_BIN" 2>/dev/null || true
 
 # ── 5. App icon ───────────────────────────────────────────────────────────────
 ICONSET=$(mktemp -d)/AppIcon.iconset
