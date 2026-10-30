@@ -50,7 +50,10 @@ if [ "$MODE" = "download" ]; then
 log "Checking Homebrew…"
 if ! command -v brew >/dev/null 2>&1; then
     log "Installing Homebrew (you may be prompted for your password)…"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    if [ -d /opt/homebrew ] && [ ! -w /opt/homebrew ]; then
+        sudo chown -R "$(id -un)" /opt/homebrew
+    fi
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     eval "$(/opt/homebrew/bin/brew shellenv)"
 fi
 ok "Homebrew $(brew --version | head -1)"
@@ -118,7 +121,11 @@ ok "Repo at $REPO"
 log "Checking Homebrew…"
 if ! command -v brew >/dev/null 2>&1; then
     log "Installing Homebrew (you may be prompted for your password)…"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    # Fix ownership of /opt/homebrew if it exists but is owned by root.
+    if [ -d /opt/homebrew ] && [ ! -w /opt/homebrew ]; then
+        sudo chown -R "$(id -un)" /opt/homebrew
+    fi
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     eval "$(/opt/homebrew/bin/brew shellenv)"
 fi
 ok "Homebrew $(brew --version | head -1)"
